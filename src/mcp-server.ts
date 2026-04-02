@@ -3,7 +3,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import axios from "axios";
-import fs from "fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import fs from "fs/promises";
 import path from "path";
 import os from "os";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
@@ -20,24 +21,35 @@ import { base } from "viem/chains";
 const CONFIG_DIR = path.join(os.homedir(), ".aegis");
 const IDENTITY_PATH = path.join(CONFIG_DIR, "identity.json");
 
-// Adjust this URL based on whether you are testing locally or on Railway
 const AEGIS_API_URL = "https://aegis-parse-production.up.railway.app/api/parse";
+const AEGIS_ENTERPRISE_WALLET = "0xDb11E8ba517ecB97C30a77b34C6492d2e15FD510"; // Payout wallet
 
-const AEGIS_ENTERPRISE_WALLET = "0xDb11E8ba517ecB97C30a77b34C6492d2e15FD510"; // Your payout wallet
-
-// Setup Viem Clients for Base
-const publicClient = createPublicClient({ chain: base, transport: http() });
+// Allow custom RPC to prevent rate limiting, fallback to public
+const RPC_URL = process.env.BASE_RPC_URL;
+const publicClient = createPublicClient({
+  chain: base,
+  transport: http(RPC_URL),
+});
 
 // --- IDENTITY MANAGEMENT ---
 function getOrCreateIdentity() {
-  if (!fs.existsSync(CONFIG_DIR)) fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  if (!existsSync(CONFIG_DIR)) mkdirSync(CONFIG_DIR, { recursive: true });
 
-  if (fs.existsSync(IDENTITY_PATH)) {
-    const data = JSON.parse(fs.readFileSync(IDENTITY_PATH, "utf-8"));
-    return {
-      account: privateKeyToAccount(data.privateKey),
-      activeTxHash: data.activeTxHash || null,
-    };
+  if (existsSync(IDENTITY_PATH)) {
+    try {
+      // Handle corrupt JSON gracefully
+      const data = JSON.parse(readFileSync(IDENTITY_PATH, "utf-8"));
+      if (data.privateKey) {
+        return {
+          account: privateKeyToAccount(data.privateKey),
+          activeTxHash: data.activeTxHash || null,
+        };
+      }
+    } catch (err) {
+      console.error(
+        "[Aegis] ⚠️ identity.json corrupted. Generating new wallet...",
+      );
+    }
   }
 
   const privateKey = generatePrivateKey();
@@ -49,56 +61,90 @@ function getOrCreateIdentity() {
     created: new Date().toISOString(),
   };
 
-  fs.writeFileSync(IDENTITY_PATH, JSON.stringify(identity, null, 2), {
+  writeFileSync(IDENTITY_PATH, JSON.stringify(identity, null, 2), {
     mode: 0o600,
   });
   return { account, activeTxHash: null };
 }
 
-// Keep state mutable so we can update it in memory without restarting
 let { account: userAccount, activeTxHash: globalTxHash } =
   getOrCreateIdentity();
 const walletClient = createWalletClient({
   account: userAccount,
   chain: base,
-  transport: http(),
+  transport: http(RPC_URL),
 });
 
-// --- CORE LOGIC: SWEEP & SYNC ---
-async function checkAndSweepFunds(forceSweep = false) {
-  // FAST PATH: If we have a hash and aren't forced to check, skip the RPC call
-  if (globalTxHash && !forceSweep) return globalTxHash;
+/** Serializes identity.json read/modify/write so concurrent sweeps cannot interleave. */
+let identityFileChain: Promise<unknown> = Promise.resolve();
 
+function withIdentityFileLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = identityFileChain.then(() => fn());
+  identityFileChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+// --- CORE LOGIC: SWEEP & SYNC ---
+// We check the balance on every scrape to ensure top-ups are caught immediately.
+async function checkAndSweepFunds() {
   const balance = await publicClient.getBalance({
     address: userAccount.address,
   });
 
-  // If balance is enough to cover the transfer + gas
-  if (balance > parseEther("0.000005")) {
+  const feeData = await publicClient.estimateFeesPerGas();
+  const gasPrice =
+    feeData.maxFeePerGas ?? feeData.gasPrice ?? parseEther("0.000000001");
+  const estimatedGas = 21000n; // standard ETH transfer
+  const totalFee = gasPrice * estimatedGas;
+
+  // Minimum threshold: Don't sweep dust. Wait until they have at least 0.000005 ETH + gas.
+  const minThreshold = parseEther("0.000005") + totalFee;
+
+  if (balance >= minThreshold) {
+    const valueToSend = balance - totalFee;
+
     console.error(
-      `[Aegis] 💰 Deposit detected! Sweeping ${formatEther(balance)} to Aegis...`,
+      `[Aegis] 💰 Deposit detected! Sweeping ${formatEther(valueToSend)} to Aegis (reserving ${formatEther(totalFee)} for gas)...`,
     );
 
     try {
       const hash = await walletClient.sendTransaction({
         to: AEGIS_ENTERPRISE_WALLET as `0x${string}`,
-        value: balance - parseEther("0.000004"), // Leave a tiny bit for gas
+        value: valueToSend,
+        gas: estimatedGas,
+        ...(feeData.maxFeePerGas != null
+          ? {
+              maxFeePerGas: feeData.maxFeePerGas,
+              maxPriorityFeePerGas:
+                feeData.maxPriorityFeePerGas ?? feeData.maxFeePerGas,
+            }
+          : { gasPrice }),
       });
 
-      // Update File
-      const identityData = JSON.parse(fs.readFileSync(IDENTITY_PATH, "utf-8"));
-      identityData.activeTxHash = hash;
-      fs.writeFileSync(IDENTITY_PATH, JSON.stringify(identityData, null, 2));
+      await withIdentityFileLock(async () => {
+        const fileContent = await fs.readFile(IDENTITY_PATH, "utf-8");
+        const identityData = JSON.parse(fileContent);
+        identityData.activeTxHash = hash;
+        await fs.writeFile(
+          IDENTITY_PATH,
+          JSON.stringify(identityData, null, 2),
+          {
+            mode: 0o600,
+          },
+        );
+      });
 
-      // Update Memory
       globalTxHash = hash;
-
       console.error(`[Aegis] ✅ Credits initialized. Hash: ${hash}`);
       return hash;
     } catch (err) {
       console.error("[Aegis] ❌ Sweep failed:", err);
     }
   }
+
   return globalTxHash;
 }
 
@@ -113,8 +159,23 @@ server.tool(
   "Scrapes any URL into clean Markdown. Proves payment via on-chain signature.",
   { url: z.string().url() },
   async ({ url }) => {
-    // 1. Get the current hash (fast path)
-    const currentHash = await checkAndSweepFunds(false);
+    let currentHash;
+
+    // Wrap the sweep in a try/catch for RPC network failures
+    try {
+      currentHash = await checkAndSweepFunds();
+    } catch (rpcError: any) {
+      console.error("[Aegis] RPC Error:", rpcError.message);
+      return {
+        content: [
+          {
+            type: "text",
+            text: "❌ Error: Could not connect to the Base network to verify funds. Please check your internet or try setting a custom BASE_RPC_URL.",
+          },
+        ],
+        isError: true,
+      };
+    }
 
     if (!currentHash) {
       return {
@@ -129,12 +190,10 @@ server.tool(
     }
 
     try {
-      // 2. Generate Cryptographic Challenge-Response
       const timestamp = Date.now().toString();
       const message = `Aegis Parse Auth: ${currentHash}:${timestamp}`;
       const signature = await userAccount.signMessage({ message });
 
-      // 3. Call Railway API (The Source of Truth for Balance)
       const response = await axios.post(
         AEGIS_API_URL,
         { url },
@@ -149,51 +208,51 @@ server.tool(
         },
       );
 
-      // --- MAPPING UPDATE ---
-      // We now map directly to your backend's specific JSON return structure
-      const { data, metadata } = response.data;
+      // Defensive API Response parsing
+      const responseData = response.data || {};
+      if (!responseData.data || !responseData.metadata) {
+        throw new Error("Invalid response format from Aegis API.");
+      }
+
+      const { data, metadata } = responseData;
+
+      // Deep fallback validation for string interpolation
+      const title = data?.title || "Untitled Page";
+      const markdown = data?.content || "No content could be extracted.";
+      const balance = metadata?.credit_balance ?? "Unknown";
 
       return {
         content: [
           {
             type: "text",
-            text: `[Aegis Wallet Balance: ${metadata.credit_balance} Credits]\n\n# ${data.title}\n\n${data.content}`,
+            text: `[Aegis Wallet Balance: ${balance} Credits]\n\n# ${title}\n\n${markdown}`,
           },
         ],
       };
     } catch (error: any) {
-      // If the server says we're broke, force a sweep check right now.
       if (error.response?.status === 402) {
         console.error(
-          "[Aegis] 402 Payment Required. Checking for new deposits...",
+          "[Aegis] 402 Payment Required. Waiting for new deposits...",
         );
-        const newHash = await checkAndSweepFunds(true);
-
-        if (newHash && newHash !== currentHash) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "🔄 Funds swept successfully! Please click retry on your prompt.",
-              },
-            ],
-            isError: true,
-          };
-        }
-
         return {
           content: [
             {
               type: "text",
-              text: "❌ Credits depleted. Please top up your Aegis wallet with Base ETH.",
+              text: "❌ Credits depleted. Please top up your Aegis wallet with Base ETH and try again.",
             },
           ],
           isError: true,
         };
       }
 
+      // Sanitize errors so we don't leak hostnames or proxy configs
+      const cleanError = error.response
+        ? `API Error: Status ${error.response.status}`
+        : "Network or timeout error connecting to Aegis.";
+      console.error(`[Aegis] Backend Error:`, error.message);
+
       return {
-        content: [{ type: "text", text: `Error: ${error.message}` }],
+        content: [{ type: "text", text: `Error: ${cleanError}` }],
         isError: true,
       };
     }
@@ -208,12 +267,18 @@ async function main() {
   console.error("🚀 Aegis MCP Live.");
   console.error(`📫 Wallet: ${userAccount.address}`);
 
-  // Proactive check on startup
-  const hash = await checkAndSweepFunds(true);
-  if (hash) {
-    console.error(`✅ Ready to scrape with hash: ${hash}`);
-  } else {
-    console.error("ℹ️ No pending deposits found. Waiting for funds...");
+  // Don't crash on startup if RPC is down
+  try {
+    const hash = await checkAndSweepFunds();
+    if (hash) {
+      console.error(`✅ Ready to scrape with hash: ${hash}`);
+    } else {
+      console.error("ℹ️ No pending deposits found. Waiting for funds...");
+    }
+  } catch (startupError) {
+    console.error(
+      "⚠️ Could not reach Base RPC on startup. Will retry on next scrape.",
+    );
   }
 }
 
