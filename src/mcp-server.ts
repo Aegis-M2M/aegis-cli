@@ -2,7 +2,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import axios from "axios";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import fs from "fs/promises";
 import path from "path";
@@ -37,7 +36,6 @@ function getOrCreateIdentity() {
 
   if (existsSync(IDENTITY_PATH)) {
     try {
-      // Handle corrupt JSON gracefully
       const data = JSON.parse(readFileSync(IDENTITY_PATH, "utf-8"));
       if (data.privateKey) {
         return {
@@ -88,7 +86,6 @@ function withIdentityFileLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 // --- CORE LOGIC: SWEEP & SYNC ---
-// We check the balance on every scrape to ensure top-ups are caught immediately.
 async function checkAndSweepFunds() {
   const balance = await publicClient.getBalance({
     address: userAccount.address,
@@ -97,10 +94,9 @@ async function checkAndSweepFunds() {
   const feeData = await publicClient.estimateFeesPerGas();
   const gasPrice =
     feeData.maxFeePerGas ?? feeData.gasPrice ?? parseEther("0.000000001");
-  const estimatedGas = 21000n; // standard ETH transfer
+  const estimatedGas = 21000n;
   const totalFee = gasPrice * estimatedGas;
 
-  // Minimum threshold: Don't sweep dust. Wait until they have at least 0.000005 ETH + gas.
   const minThreshold = parseEther("0.000005") + totalFee;
 
   if (balance >= minThreshold) {
@@ -131,9 +127,7 @@ async function checkAndSweepFunds() {
         await fs.writeFile(
           IDENTITY_PATH,
           JSON.stringify(identityData, null, 2),
-          {
-            mode: 0o600,
-          },
+          { mode: 0o600 },
         );
       });
 
@@ -161,7 +155,6 @@ server.tool(
   async ({ url }) => {
     let currentHash;
 
-    // Wrap the sweep in a try/catch for RPC network failures
     try {
       currentHash = await checkAndSweepFunds();
     } catch (rpcError: any) {
@@ -170,7 +163,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: "❌ Error: Could not connect to the Base network to verify funds. Please check your internet or try setting a custom BASE_RPC_URL.",
+            text: "❌ Error: Could not connect to Base network.",
           },
         ],
         isError: true,
@@ -182,7 +175,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `⚠️ Aegis Wallet Empty. Please send Base ETH to: ${userAccount.address}`,
+            text: `⚠️ Aegis Wallet Empty. Send Base ETH to: ${userAccount.address}`,
           },
         ],
         isError: true,
@@ -194,31 +187,43 @@ server.tool(
       const message = `Aegis Parse Auth: ${currentHash}:${timestamp}`;
       const signature = await userAccount.signMessage({ message });
 
-      const response = await axios.post(
-        AEGIS_API_URL,
-        { url },
-        {
-          headers: {
-            "x-payment-token": currentHash,
-            "x-signature": signature,
-            "x-timestamp": timestamp,
-            "Content-Type": "application/json",
-          },
-          timeout: 45000,
+      const response = await fetch(AEGIS_API_URL, {
+        method: "POST",
+        headers: {
+          "x-payment-token": currentHash,
+          "x-signature": signature,
+          "x-timestamp": timestamp,
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(45000),
+      });
 
-      // Defensive API Response parsing
-      const responseData = response.data || {};
+      if (response.status === 402) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: "❌ Credits depleted. Please top up your wallet.",
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      if (!response.ok) {
+        throw new Error(`API Error: Status ${response.status}`);
+      }
+
+      const responseData: any = await response.json();
+
       if (!responseData.data || !responseData.metadata) {
         throw new Error("Invalid response format from Aegis API.");
       }
 
       const { data, metadata } = responseData;
-
-      // Deep fallback validation for string interpolation
       const title = data?.title || "Untitled Page";
-      const markdown = data?.content || "No content could be extracted.";
+      const markdown = data?.content || "No content extracted.";
       const balance = metadata?.credit_balance ?? "Unknown";
 
       return {
@@ -230,25 +235,11 @@ server.tool(
         ],
       };
     } catch (error: any) {
-      if (error.response?.status === 402) {
-        console.error(
-          "[Aegis] 402 Payment Required. Waiting for new deposits...",
-        );
-        return {
-          content: [
-            {
-              type: "text",
-              text: "❌ Credits depleted. Please top up your Aegis wallet with Base ETH and try again.",
-            },
-          ],
-          isError: true,
-        };
-      }
+      const cleanError =
+        error.name === "TimeoutError"
+          ? "Request timed out after 45s."
+          : "Network error connecting to Aegis.";
 
-      // Sanitize errors so we don't leak hostnames or proxy configs
-      const cleanError = error.response
-        ? `API Error: Status ${error.response.status}`
-        : "Network or timeout error connecting to Aegis.";
       console.error(`[Aegis] Backend Error:`, error.message);
 
       return {
@@ -259,7 +250,6 @@ server.tool(
   },
 );
 
-// --- STARTUP ---
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
@@ -267,18 +257,13 @@ async function main() {
   console.error("🚀 Aegis MCP Live.");
   console.error(`📫 Wallet: ${userAccount.address}`);
 
-  // Don't crash on startup if RPC is down
   try {
     const hash = await checkAndSweepFunds();
     if (hash) {
-      console.error(`✅ Ready to scrape with hash: ${hash}`);
-    } else {
-      console.error("ℹ️ No pending deposits found. Waiting for funds...");
+      console.error(`✅ Ready with hash: ${hash}`);
     }
-  } catch (startupError) {
-    console.error(
-      "⚠️ Could not reach Base RPC on startup. Will retry on next scrape.",
-    );
+  } catch (e) {
+    console.error("⚠️ Base RPC unavailable on startup.");
   }
 }
 

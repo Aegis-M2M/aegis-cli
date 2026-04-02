@@ -10,7 +10,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.3",
-    "axios": "^1.6.0",
     "viem": "^2.21.0",
     "zod": "^3.23.0"
   }
