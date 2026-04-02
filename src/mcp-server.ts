@@ -21,7 +21,6 @@ const CONFIG_DIR = path.join(os.homedir(), ".aegis");
 const IDENTITY_PATH = path.join(CONFIG_DIR, "identity.json");
 
 // Adjust this URL based on whether you are testing locally or on Railway
-// const AEGIS_API_URL = "http://localhost:3000/api/parse";
 const AEGIS_API_URL = "https://aegis-parse-production.up.railway.app/api/parse";
 
 const AEGIS_ENTERPRISE_WALLET = "0xDb11E8ba517ecB97C30a77b34C6492d2e15FD510"; // Your payout wallet
