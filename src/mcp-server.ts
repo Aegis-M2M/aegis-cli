@@ -98,13 +98,24 @@ async function checkAndSweepFunds() {
     const estimatedGas = 21000n;
     const totalFee = gasPrice * estimatedGas;
 
-    const minThreshold = parseEther("0.000005") + totalFee;
+    // Safety buffer to account for fee volatility between estimation and signing.
+    // Without this, a few wei can tip the tx into "insufficient funds" territory.
+    const safetyBuffer = totalFee / 20n; // ~5%
+    const minThreshold =
+      parseEther("0.000005") + totalFee + safetyBuffer;
 
     if (balance >= minThreshold) {
-      const valueToSend = balance - totalFee;
+      const valueToSend = balance - totalFee - safetyBuffer;
+
+      if (valueToSend <= 0n) {
+        console.error(
+          "[Aegis] ⚠️ Balance too low after safety buffer. Skipping sweep.",
+        );
+        return globalTxHash;
+      }
 
       console.error(
-        `[Aegis] 💰 Deposit detected! Sweeping ${formatEther(valueToSend)} to Aegis...`,
+        `[Aegis] 💰 Deposit detected! Sweeping ${formatEther(valueToSend)} to Aegis... (Buffer: ${formatEther(safetyBuffer)})`,
       );
 
       try {
