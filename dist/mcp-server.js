@@ -12,7 +12,9 @@ import { base } from "viem/chains";
 // --- CONFIG & PATHS ---
 const CONFIG_DIR = path.join(os.homedir(), ".aegis");
 const IDENTITY_PATH = path.join(CONFIG_DIR, "identity.json");
-const AEGIS_API_URL = "https://aegis-parse-production.up.railway.app/api/parse";
+const AEGIS_API_URL = process.env.AEGIS_LOCAL_DEV === "true"
+    ? "http://localhost:3000/api/parse"
+    : "https://aegis-parse-production.up.railway.app/api/parse";
 const AEGIS_ENTERPRISE_WALLET = "0xDb11E8ba517ecB97C30a77b34C6492d2e15FD510"; // Payout wallet
 // Allow custom RPC to prevent rate limiting, fallback to public
 const RPC_URL = process.env.BASE_RPC_URL;
@@ -57,53 +59,53 @@ const walletClient = createWalletClient({
     chain: base,
     transport: http(RPC_URL),
 });
-/** Serializes identity.json read/modify/write so concurrent sweeps cannot interleave. */
-let identityFileChain = Promise.resolve();
-function withIdentityFileLock(fn) {
-    const run = identityFileChain.then(() => fn());
-    identityFileChain = run.then(() => undefined, () => undefined);
+/** Serializes sweep path so parallel tool calls cannot double-spend or race RPC. */
+let sweepLockChain = Promise.resolve();
+function withSweepLock(fn) {
+    const run = sweepLockChain.then(() => fn());
+    sweepLockChain = run.catch(() => undefined);
     return run;
 }
 // --- CORE LOGIC: SWEEP & SYNC ---
 async function checkAndSweepFunds() {
-    const balance = await publicClient.getBalance({
-        address: userAccount.address,
-    });
-    const feeData = await publicClient.estimateFeesPerGas();
-    const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice ?? parseEther("0.000000001");
-    const estimatedGas = 21000n;
-    const totalFee = gasPrice * estimatedGas;
-    const minThreshold = parseEther("0.000005") + totalFee;
-    if (balance >= minThreshold) {
-        const valueToSend = balance - totalFee;
-        console.error(`[Aegis] 💰 Deposit detected! Sweeping ${formatEther(valueToSend)} to Aegis (reserving ${formatEther(totalFee)} for gas)...`);
-        try {
-            const hash = await walletClient.sendTransaction({
-                to: AEGIS_ENTERPRISE_WALLET,
-                value: valueToSend,
-                gas: estimatedGas,
-                ...(feeData.maxFeePerGas != null
-                    ? {
-                        maxFeePerGas: feeData.maxFeePerGas,
-                        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ?? feeData.maxFeePerGas,
-                    }
-                    : { gasPrice }),
-            });
-            await withIdentityFileLock(async () => {
+    return withSweepLock(async () => {
+        const balance = await publicClient.getBalance({
+            address: userAccount.address,
+        });
+        const feeData = await publicClient.estimateFeesPerGas();
+        const gasPrice = feeData.maxFeePerGas ?? feeData.gasPrice ?? parseEther("0.000000001");
+        const estimatedGas = 21000n;
+        const totalFee = gasPrice * estimatedGas;
+        const minThreshold = parseEther("0.000005") + totalFee;
+        if (balance >= minThreshold) {
+            const valueToSend = balance - totalFee;
+            console.error(`[Aegis] 💰 Deposit detected! Sweeping ${formatEther(valueToSend)} to Aegis...`);
+            try {
+                const hash = await walletClient.sendTransaction({
+                    to: AEGIS_ENTERPRISE_WALLET,
+                    value: valueToSend,
+                    gas: estimatedGas,
+                    ...(feeData.maxFeePerGas != null
+                        ? {
+                            maxFeePerGas: feeData.maxFeePerGas,
+                            maxPriorityFeePerGas: feeData.maxPriorityFeePerGas ?? feeData.maxFeePerGas,
+                        }
+                        : { gasPrice }),
+                });
                 const fileContent = await fs.readFile(IDENTITY_PATH, "utf-8");
                 const identityData = JSON.parse(fileContent);
                 identityData.activeTxHash = hash;
                 await fs.writeFile(IDENTITY_PATH, JSON.stringify(identityData, null, 2), { mode: 0o600 });
-            });
-            globalTxHash = hash;
-            console.error(`[Aegis] ✅ Credits initialized. Hash: ${hash}`);
-            return hash;
+                globalTxHash = hash;
+                console.error(`[Aegis] ✅ Credits initialized. Hash: ${hash}`);
+                return hash;
+            }
+            catch (err) {
+                console.error("[Aegis] ❌ Sweep failed:", err);
+            }
         }
-        catch (err) {
-            console.error("[Aegis] ❌ Sweep failed:", err);
-        }
-    }
-    return globalTxHash;
+        return globalTxHash;
+    });
 }
 // --- MCP SERVER SETUP ---
 const server = new McpServer({
