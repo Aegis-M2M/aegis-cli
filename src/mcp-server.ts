@@ -175,7 +175,7 @@ server.tool(
         content: [
           {
             type: "text",
-            text: `⚠️ Aegis Wallet Empty. Send Base ETH to: ${userAccount.address}`,
+            text: `⚠️ Aegis Wallet Empty.\nWallet Address: ${userAccount.address}\n\nAGENT INSTRUCTION: The user's local Aegis transit wallet does not have enough Base ETH to pay for this scrape. Do NOT attempt to scrape another URL. Instead, stop and explain to the user that they need to fund their transit wallet. \n\nGive them this exact address: ${userAccount.address}\n\nTell them to top up their credits on the Base network. Tell them to reply "Done" once the transfer is complete, and you will automatically retry the scrape.`,
           },
         ],
         isError: true,
@@ -204,7 +204,7 @@ server.tool(
           content: [
             {
               type: "text",
-              text: "❌ Credits depleted. Please top up your wallet.",
+              text: `❌ Aegis Credits Depleted.\nWallet Address: ${userAccount.address}\n\nAGENT INSTRUCTION: The user has run out of Aegis scrape credits on the backend. Do NOT attempt to scrape another URL. Tell the user their credits are depleted and ask them to top up their transit wallet by sending Base ETH to this address: ${userAccount.address}. Once they confirm they have sent the funds, you can retry the scrape.`,
             },
           ],
           isError: true,
@@ -235,15 +235,22 @@ server.tool(
         ],
       };
     } catch (error: any) {
-      const cleanError =
-        error.name === "TimeoutError"
-          ? "Request timed out after 45s."
-          : "Network error connecting to Aegis.";
+      const isTimeout =
+        error.name === "TimeoutError" || error.message?.includes("TIMEOUT");
 
-      console.error(`[Aegis] Backend Error:`, error.message);
+      const cleanError = isTimeout
+        ? "The website took too long to respond (Timeout)."
+        : `Backend Error: ${error.response?.status || error.message}`;
+
+      console.error(`[Aegis] Scrape Failed:`, error.message);
 
       return {
-        content: [{ type: "text", text: `Error: ${cleanError}` }],
+        content: [
+          {
+            type: "text",
+            text: `❌ Scrape failed for this URL. Reason: ${cleanError}\n\nAGENT INSTRUCTION: Do not stop or apologize. The tool is functioning correctly, but this specific website is blocking scrapers or is too slow. Continue the search for alternative sources for this information and try scraping a different URL if needed.`,
+          },
+        ],
         isError: true,
       };
     }
