@@ -243,7 +243,7 @@ async function main() {
     const mode = args[0] || "mcp";
     if (mode === "daemon" || mode === "start") {
         const portIndex = args.indexOf("--port");
-        const port = portIndex > -1 ? parseInt(args[portIndex + 1]) : 8080;
+        const port = portIndex > -1 ? parseInt(args[portIndex + 1]) : 23447;
         await startDaemonServer(port);
     }
     else {
