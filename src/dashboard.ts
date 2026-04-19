@@ -50,7 +50,7 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-bottom: 28px;
+      margin-bottom: 20px;
     }
     .brand {
       display: flex;
@@ -102,6 +102,37 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       50% { opacity: 0.55; }
     }
 
+    /* Tabs */
+    .tabs {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      background: var(--bg-elev);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 22px;
+    }
+    .tab {
+      appearance: none;
+      background: transparent;
+      color: var(--text-dim);
+      border: 0;
+      padding: 8px 18px;
+      font: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 7px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      background: var(--bg-elev-2);
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px var(--border-strong);
+    }
+    .panel[hidden] { display: none !important; }
+
     .grid {
       display: grid;
       grid-template-columns: 1.15fr 1fr;
@@ -129,7 +160,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
     .row { display: flex; align-items: center; gap: 10px; }
     .row + .row { margin-top: 10px; }
 
-    /* Wallet card */
     .wallet-addr {
       display: flex;
       align-items: center;
@@ -157,8 +187,28 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       cursor: pointer;
       transition: all 0.15s ease;
     }
-    .btn:hover { color: var(--text); border-color: var(--accent-dim); background: rgba(124,249,208,0.04); }
+    .btn:hover:not(:disabled) {
+      color: var(--text);
+      border-color: var(--accent-dim);
+      background: rgba(124,249,208,0.04);
+    }
     .btn.copied { color: var(--accent); border-color: var(--accent-dim); }
+    .btn.primary {
+      background: linear-gradient(135deg, #7cf9d0, #4a9eff);
+      color: #061014;
+      border-color: transparent;
+      font-weight: 600;
+      padding: 10px 16px;
+      font-size: 13px;
+    }
+    .btn.primary:hover:not(:disabled) {
+      color: #061014;
+      filter: brightness(1.08);
+    }
+    .btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
 
     .hint {
       margin-top: 12px;
@@ -189,7 +239,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       margin-right: 6px;
     }
 
-    /* Balance card */
     .balance-main {
       display: flex;
       align-items: baseline;
@@ -213,7 +262,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
     .balance-sub .sep { color: var(--text-faint); margin: 0 8px; }
     .empty-balance { color: var(--warn); }
 
-    /* Feed card */
     .feed-wrap { grid-column: 1 / -1; }
     .feed-header {
       display: flex;
@@ -324,7 +372,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       font-size: 12px;
     }
 
-    /* Stats strip */
     .stats {
       display: grid;
       grid-template-columns: repeat(4, 1fr);
@@ -354,6 +401,106 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       font-variant-numeric: tabular-nums;
     }
 
+    /* Provider form */
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 700px) {
+      .form-grid { grid-template-columns: 1fr; }
+    }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field.full { grid-column: 1 / -1; }
+    .field label {
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-faint);
+      font-weight: 600;
+    }
+    .field input,
+    .field select,
+    .field textarea {
+      background: var(--bg-elev-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      color: var(--text);
+      font: inherit;
+      font-size: 13px;
+      font-family: var(--mono);
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .field input:focus,
+    .field select:focus,
+    .field textarea:focus {
+      border-color: var(--accent-dim);
+      box-shadow: 0 0 0 3px rgba(124,249,208,0.08);
+    }
+    .field textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+    .field .help {
+      color: var(--text-faint);
+      font-size: 11.5px;
+    }
+    .form-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-top: 16px;
+    }
+    .form-status {
+      flex: 1;
+      min-height: 20px;
+      font-size: 12.5px;
+      font-family: var(--mono);
+      color: var(--text-dim);
+      word-break: break-word;
+    }
+    .form-status.ok { color: var(--accent); }
+    .form-status.err { color: var(--danger); }
+    .form-status.busy { color: var(--warn); }
+
+    .earnings-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    @media (max-width: 700px) {
+      .earnings-grid { grid-template-columns: 1fr; }
+    }
+    .earnings-block {
+      background: var(--bg-elev-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .earnings-label {
+      color: var(--text-faint);
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .earnings-value {
+      font-family: var(--mono);
+      font-size: 22px;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .earnings-value .unit {
+      color: var(--text-dim);
+      font-size: 12px;
+      margin-left: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
     footer {
       margin-top: 32px;
       color: var(--text-faint);
@@ -381,63 +528,146 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       </div>
     </header>
 
-    <div class="grid">
-      <div class="card">
-        <h2>Web3 Transit Wallet</h2>
-        <div class="wallet-addr">
-          <span class="addr" id="wallet-addr">—</span>
-          <button class="btn" id="copy-btn" type="button">Copy</button>
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="consumer" role="tab">Consumer</button>
+      <button class="tab" data-tab="provider" role="tab">Provider</button>
+    </div>
+
+    <!-- ════════════════════════════════════════════════════════════ -->
+    <!--  CONSUMER PANEL                                              -->
+    <!-- ════════════════════════════════════════════════════════════ -->
+    <section class="panel" id="panel-consumer" role="tabpanel">
+      <div class="grid">
+        <div class="card">
+          <h2>Web3 Transit Wallet</h2>
+          <div class="wallet-addr">
+            <span class="addr" id="wallet-addr">—</span>
+            <button class="btn" id="copy-btn" type="button">Copy</button>
+          </div>
+          <div class="hint">
+            <span class="chain-badge">● Base</span>
+            Send USDC to this address to auto-deposit. A 1% gas fee is applied before credits are issued.
+          </div>
         </div>
-        <div class="hint">
-          <span class="chain-badge">● Base</span>
-          Send USDC to this address to auto-deposit. A 1% gas fee is applied before credits are issued.
+
+        <div class="card">
+          <h2>Credit Balance</h2>
+          <div class="balance-main">
+            <span class="balance-num" id="balance-num">—</span>
+            <span class="balance-unit">credits</span>
+          </div>
+          <div class="balance-sub" id="balance-sub">
+            fetching balance…
+          </div>
         </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Total Calls</div>
+          <div class="stat-value" id="stat-total">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Success</div>
+          <div class="stat-value" id="stat-ok">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Errors</div>
+          <div class="stat-value" id="stat-err">0</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Credits Spent</div>
+          <div class="stat-value" id="stat-spent">0</div>
+        </div>
+      </div>
+
+      <div class="card feed-wrap">
+        <div class="feed-header">
+          <h2>Recent API Calls</h2>
+          <div class="feed-meta" id="feed-meta">—</div>
+        </div>
+        <div id="feed" class="feed">
+          <div class="feed-empty" id="feed-empty">
+            No API calls yet. Fire one with:
+            <br/>
+            <code>curl -X POST http://localhost:23447/v1/execute -H "Content-Type: application/json" -d '{"service":"aegis-parse","request":{"url":"https://example.com"}}'</code>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ════════════════════════════════════════════════════════════ -->
+    <!--  PROVIDER PANEL                                              -->
+    <!-- ════════════════════════════════════════════════════════════ -->
+    <section class="panel" id="panel-provider" role="tabpanel" hidden>
+      <div class="card" style="margin-bottom: 18px;">
+        <h2>Register a Service</h2>
+        <form id="provider-form" autocomplete="off">
+          <div class="form-grid">
+            <div class="field">
+              <label for="f-id">Service ID</label>
+              <input id="f-id" name="id" type="text" placeholder="my-api" spellcheck="false" required />
+              <span class="help">Unique, 2-64 chars. Letters, digits, dashes, underscores.</span>
+            </div>
+            <div class="field">
+              <label for="f-endpoint">Endpoint URL</label>
+              <input id="f-endpoint" name="endpoint_url" type="text" placeholder="https://api.example.com/run" spellcheck="false" required />
+              <span class="help">We POST the sample request here with your secret.</span>
+            </div>
+            <div class="field">
+              <label for="f-wallet">Payout Wallet</label>
+              <input id="f-wallet" name="payout_wallet" type="text" placeholder="0x…" spellcheck="false" required />
+              <span class="help">EVM address (Base network) that receives claims.</span>
+            </div>
+            <div class="field">
+              <label for="f-pricing">Pricing</label>
+              <select id="f-pricing" name="pricing_type" required>
+                <option value="FIXED">FIXED</option>
+                <option value="DYNAMIC">DYNAMIC</option>
+              </select>
+              <span class="help">FIXED charges a flat credit cost per call.</span>
+            </div>
+            <div class="field" id="field-cost">
+              <label for="f-cost">Fixed Cost (credits)</label>
+              <input id="f-cost" name="fixed_cost" type="number" min="1" step="1" placeholder="e.g. 250" />
+              <span class="help">100 credits = $0.01 USD.</span>
+            </div>
+            <div class="field">
+              <label for="f-secret">Provider Secret</label>
+              <input id="f-secret" name="secret" type="password" placeholder="Bearer token" spellcheck="false" required />
+              <span class="help">Sent as <code>Authorization: Bearer</code>. Stored encrypted.</span>
+            </div>
+            <div class="field full">
+              <label for="f-sample">Sample Request (JSON)</label>
+              <textarea id="f-sample" name="sample_request" spellcheck="false" required>{ "hello": "world" }</textarea>
+              <span class="help">We fire this against your endpoint to verify connectivity before registering.</span>
+            </div>
+          </div>
+          <div class="form-actions">
+            <button id="register-btn" class="btn primary" type="submit">Test &amp; Register</button>
+            <span id="register-status" class="form-status">Fill out the form, then press Register. We test your endpoint before registering.</span>
+          </div>
+        </form>
       </div>
 
       <div class="card">
-        <h2>Credit Balance</h2>
-        <div class="balance-main">
-          <span class="balance-num" id="balance-num">—</span>
-          <span class="balance-unit">credits</span>
+        <h2>Earnings · <span id="earnings-id" style="color: var(--text); text-transform: none; letter-spacing: 0;">—</span></h2>
+        <div class="earnings-grid">
+          <div class="earnings-block">
+            <div class="earnings-label">Pending</div>
+            <div class="earnings-value"><span id="earn-pending">—</span><span class="unit" id="earn-pending-usd"></span></div>
+          </div>
+          <div class="earnings-block">
+            <div class="earnings-label">Total Earned</div>
+            <div class="earnings-value"><span id="earn-total">—</span><span class="unit" id="earn-total-usd"></span></div>
+          </div>
         </div>
-        <div class="balance-sub" id="balance-sub">
-          fetching balance…
-        </div>
-      </div>
-    </div>
-
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-label">Total Calls</div>
-        <div class="stat-value" id="stat-total">0</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Success</div>
-        <div class="stat-value" id="stat-ok">0</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Errors</div>
-        <div class="stat-value" id="stat-err">0</div>
-      </div>
-      <div class="stat">
-        <div class="stat-label">Credits Spent</div>
-        <div class="stat-value" id="stat-spent">0</div>
-      </div>
-    </div>
-
-    <div class="card feed-wrap">
-      <div class="feed-header">
-        <h2>Recent API Calls</h2>
-        <div class="feed-meta" id="feed-meta">—</div>
-      </div>
-      <div id="feed" class="feed">
-        <div class="feed-empty" id="feed-empty">
-          No API calls yet. Fire one with:
-          <br/>
-          <code>curl -X POST http://localhost:23447/v1/execute -H "Content-Type: application/json" -d '{"service":"aegis-parse","request":{"url":"https://example.com"}}'</code>
+        <div class="form-actions">
+          <button id="claim-btn" class="btn primary" type="button" disabled>Claim</button>
+          <span id="claim-status" class="form-status">Claim requires a pending balance of at least 100,000 credits ($10).</span>
         </div>
       </div>
-    </div>
+    </section>
 
     <footer>
       aegis-cli · refresh to update · <a href="https://github.com/" target="_blank" rel="noreferrer">docs</a>
@@ -445,11 +675,56 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
   </div>
 
   <script>
+    // ════════════════════════════════════════════════════════════════
+    //  Module-level state (initialized up-top, never re-created)
+    // ════════════════════════════════════════════════════════════════
+    //
+    // keystoreCache  — last-seen stats payload per service id. Keeps the
+    //                  earnings card stable while a new request is in flight.
+    // busyState      — one-shot latches for user actions so a spammed
+    //                  button can't fire overlapping requests.
+    // activeTab      — current visible tab. Polling short-circuits any
+    //                  provider calls when we're on the consumer tab.
+    // lastStatsId    — id we last queried stats for. Used to debounce.
+    const keystoreCache = Object.create(null);
+    const busyState = { register: false, claim: false };
+    let activeTab = "consumer";
+    let lastStatsId = "";
+
+    const MIN_CLAIM_CREDITS = 100000;
+    const CREDITS_PER_USD = 10000;
+
+    // ── helpers ────────────────────────────────────────────────────
     const $ = (id) => document.getElementById(id);
+
+    function safeStringify(obj) {
+      try {
+        return JSON.stringify(obj);
+      } catch (err) {
+        try {
+          return "[unstringifiable: " + (err && err.message) + "]";
+        } catch (_) {
+          return "[unstringifiable]";
+        }
+      }
+    }
+
+    // Never overwrite a field the user is actively editing or has
+    // edited but not blurred. This prevents the polling loop from
+    // stomping keystrokes.
+    function safeSetValue(el, val) {
+      if (!el) return;
+      if (document.activeElement === el) return;
+      if (typeof val !== "string") val = val == null ? "" : String(val);
+      if (el.value !== val) el.value = val;
+    }
+
     const fmtNum = (n) =>
       (n == null || Number.isNaN(n)) ? "—" : Number(n).toLocaleString("en-US");
     const fmtUsd = (n) =>
       (n == null || Number.isNaN(n)) ? "—" : "$" + Number(n).toFixed(4);
+    const creditsToUsd = (c) =>
+      typeof c === "number" && Number.isFinite(c) ? c / CREDITS_PER_USD : null;
     const fmtTime = (ms) => {
       const d = new Date(ms);
       const pad = (x) => String(x).padStart(2, "0");
@@ -466,9 +741,26 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       return d.slice(0, 77) + "…";
     };
 
+    // ── tabs ───────────────────────────────────────────────────────
+    const tabs = document.querySelectorAll(".tab");
+    tabs.forEach((t) => {
+      t.addEventListener("click", () => {
+        const id = t.dataset.tab;
+        if (!id || id === activeTab) return;
+        activeTab = id;
+        tabs.forEach((x) => x.classList.toggle("active", x === t));
+        $("panel-consumer").hidden = id !== "consumer";
+        $("panel-provider").hidden = id !== "provider";
+        if (id === "provider") {
+          pollProviderStats(true);
+        }
+      });
+    });
+
+    // ── copy wallet ────────────────────────────────────────────────
     const copyBtn = $("copy-btn");
     copyBtn.addEventListener("click", async () => {
-      const addr = $("wallet-addr").textContent?.trim();
+      const addr = $("wallet-addr").textContent && $("wallet-addr").textContent.trim();
       if (!addr || addr === "—") return;
       try {
         await navigator.clipboard.writeText(addr);
@@ -478,7 +770,7 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
           copyBtn.textContent = "Copy";
           copyBtn.classList.remove("copied");
         }, 1400);
-      } catch {
+      } catch (_) {
         /* noop */
       }
     });
@@ -495,22 +787,21 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       }
     }
 
+    // ── consumer: call feed ────────────────────────────────────────
     function renderFeed(calls) {
       const feed = $("feed");
       const empty = $("feed-empty");
       if (!calls || calls.length === 0) {
         if (empty) empty.style.display = "";
-        [...feed.querySelectorAll(".call")].forEach((el) => el.remove());
+        Array.from(feed.querySelectorAll(".call")).forEach((el) => el.remove());
         return;
       }
       if (empty) empty.style.display = "none";
 
-      // Render newest first.
-      const sorted = [...calls].sort((a, b) => b.started_at - a.started_at);
+      const sorted = calls.slice().sort((a, b) => b.started_at - a.started_at);
 
-      // Reuse existing nodes by id to keep scroll & animations smooth.
       const existing = new Map(
-        [...feed.querySelectorAll(".call")].map((el) => [el.dataset.id, el])
+        Array.from(feed.querySelectorAll(".call")).map((el) => [el.dataset.id, el])
       );
       const frag = document.createDocumentFragment();
 
@@ -554,18 +845,244 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
         frag.appendChild(el);
       }
 
-      // Remove stale nodes.
       existing.forEach((el) => el.remove());
       feed.appendChild(frag);
     }
 
+    // ── provider: form wiring ──────────────────────────────────────
+    const pricingEl = $("f-pricing");
+    const costFieldEl = $("field-cost");
+    const costInputEl = $("f-cost");
+
+    function syncCostVisibility() {
+      const isFixed = pricingEl.value === "FIXED";
+      costFieldEl.style.display = isFixed ? "" : "none";
+      if (!isFixed) costInputEl.value = "";
+    }
+    pricingEl.addEventListener("change", syncCostVisibility);
+    syncCostVisibility();
+
+    function setStatus(el, cls, msg) {
+      el.className = "form-status" + (cls ? " " + cls : "");
+      el.textContent = msg;
+    }
+
+    const form = $("provider-form");
+    const registerBtn = $("register-btn");
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      if (busyState.register) return;
+
+      const id = $("f-id").value.trim();
+      const endpoint_url = $("f-endpoint").value.trim();
+      const payout_wallet = $("f-wallet").value.trim();
+      const pricing_type = pricingEl.value;
+      const secret = $("f-secret").value;
+      const rawSample = $("f-sample").value;
+
+      if (!id || !endpoint_url || !payout_wallet || !secret) {
+        setStatus($("register-status"), "err", "Fill in every field.");
+        return;
+      }
+
+      let fixed_cost = null;
+      if (pricing_type === "FIXED") {
+        const n = Number(costInputEl.value);
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+          setStatus($("register-status"), "err", "Fixed Cost must be a positive integer.");
+          return;
+        }
+        fixed_cost = n;
+      }
+
+      let sample_request;
+      try {
+        sample_request = JSON.parse(rawSample);
+      } catch (err) {
+        setStatus($("register-status"), "err", "Sample Request is not valid JSON.");
+        return;
+      }
+      if (!sample_request || typeof sample_request !== "object" || Array.isArray(sample_request)) {
+        setStatus($("register-status"), "err", "Sample Request must be a JSON object.");
+        return;
+      }
+
+      busyState.register = true;
+      registerBtn.disabled = true;
+      setStatus($("register-status"), "busy", "Testing your endpoint…");
+
+      try {
+        const r = await fetch("/api/provider/register", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: safeStringify({
+            id,
+            endpoint_url,
+            payout_wallet,
+            pricing_type,
+            fixed_cost,
+            secret,
+            sample_request,
+          }),
+        });
+        const body = await r.json().catch(() => ({}));
+
+        if (!r.ok) {
+          const detail = body && (body.message || body.error) || ("HTTP " + r.status);
+          const stage = body && body.stage ? " (" + body.stage + ")" : "";
+          setStatus($("register-status"), "err", "✗ " + detail + stage);
+          return;
+        }
+
+        setStatus(
+          $("register-status"),
+          "ok",
+          "✓ Registered " + id + (body.updated ? " (updated)" : "") + ". Earnings card is now live."
+        );
+        lastStatsId = id;
+        pollProviderStats(true);
+      } catch (err) {
+        setStatus($("register-status"), "err", "Network error: " + (err && err.message || err));
+      } finally {
+        busyState.register = false;
+        registerBtn.disabled = false;
+      }
+    });
+
+    // ── provider: earnings + claim ────────────────────────────────
+    const claimBtn = $("claim-btn");
+    const idInput = $("f-id");
+
+    idInput.addEventListener("input", () => {
+      const v = idInput.value.trim();
+      $("earnings-id").textContent = v || "—";
+      if (v) pollProviderStats(true);
+      else resetEarnings();
+    });
+
+    function resetEarnings() {
+      $("earn-pending").textContent = "—";
+      $("earn-pending-usd").textContent = "";
+      $("earn-total").textContent = "—";
+      $("earn-total-usd").textContent = "";
+      claimBtn.disabled = true;
+    }
+    resetEarnings();
+
+    async function pollProviderStats(force) {
+      if (activeTab !== "provider" && !force) return;
+      const id = idInput.value.trim();
+      if (!id) return;
+
+      try {
+        const r = await fetch("/api/provider/stats/" + encodeURIComponent(id), {
+          cache: "no-store",
+        });
+        if (r.status === 404) {
+          keystoreCache[id] = null;
+          if (idInput.value.trim() === id) {
+            $("earnings-id").textContent = id;
+            $("earn-pending").textContent = "0";
+            $("earn-pending-usd").textContent = "$0.00";
+            $("earn-total").textContent = "0";
+            $("earn-total-usd").textContent = "$0.00";
+            claimBtn.disabled = true;
+            setStatus($("claim-status"), "", "Service not registered yet.");
+          }
+          return;
+        }
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          if (idInput.value.trim() === id) {
+            setStatus($("claim-status"), "err", "Stats unavailable: " + (body && (body.message || body.error) || r.status));
+          }
+          return;
+        }
+
+        keystoreCache[id] = body;
+        if (idInput.value.trim() !== id) return;
+
+        const earnings = (body && body.earnings) || {};
+        const pending = typeof earnings.pending_balance === "number" ? earnings.pending_balance : 0;
+        const total = typeof earnings.total_earned === "number" ? earnings.total_earned : 0;
+
+        $("earnings-id").textContent = id;
+        $("earn-pending").textContent = fmtNum(pending);
+        $("earn-pending-usd").textContent = fmtUsd(creditsToUsd(pending));
+        $("earn-total").textContent = fmtNum(total);
+        $("earn-total-usd").textContent = fmtUsd(creditsToUsd(total));
+
+        const canClaim = !!body.local_registered && pending > MIN_CLAIM_CREDITS;
+        claimBtn.disabled = busyState.claim || !canClaim;
+
+        if (!body.local_registered) {
+          setStatus($("claim-status"), "", "Service is registered on the router, but this daemon doesn't hold its secret. Re-register here to enable claiming.");
+        } else if (pending <= MIN_CLAIM_CREDITS) {
+          const need = MIN_CLAIM_CREDITS - pending;
+          setStatus($("claim-status"), "", "Need " + fmtNum(need + 1) + " more credits to claim (" + fmtUsd(creditsToUsd(need + 1)) + ").");
+        } else if (!busyState.claim) {
+          setStatus($("claim-status"), "ok", "Ready to claim " + fmtNum(pending) + " credits (" + fmtUsd(creditsToUsd(pending)) + ").");
+        }
+      } catch (err) {
+        /* swallow — tick will retry */
+      }
+    }
+
+    claimBtn.addEventListener("click", async () => {
+      if (busyState.claim) return;
+      const id = idInput.value.trim();
+      if (!id) return;
+      busyState.claim = true;
+      claimBtn.disabled = true;
+      setStatus($("claim-status"), "busy", "Sweeping on-chain…");
+      try {
+        const r = await fetch("/api/provider/claim", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: safeStringify({ id }),
+        });
+        const body = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          setStatus(
+            $("claim-status"),
+            "err",
+            "✗ " + (body && (body.message || body.error) || ("HTTP " + r.status))
+          );
+          return;
+        }
+        const credits = body && body.credits_claimed;
+        const tx = body && body.tx_hash;
+        setStatus(
+          $("claim-status"),
+          "ok",
+          "✓ Claimed " + fmtNum(credits) + " credits" + (tx ? " (tx " + String(tx).slice(0, 10) + "…)" : "")
+        );
+        pollProviderStats(true);
+      } catch (err) {
+        setStatus($("claim-status"), "err", "Network error: " + (err && err.message || err));
+      } finally {
+        busyState.claim = false;
+        // re-evaluate button state via next poll
+        pollProviderStats(true);
+      }
+    });
+
+    // ════════════════════════════════════════════════════════════════
+    //  Main polling loop
+    // ════════════════════════════════════════════════════════════════
+    //
+    // Wrapped in a single try/catch so network blips and transient
+    // errors never crash the script — the next tick will retry.
     async function tick() {
       try {
         const r = await fetch("/api/status", { cache: "no-store" });
         if (!r.ok) throw new Error("status " + r.status);
         const s = await r.json();
 
-        setOnline(true, s.router_online ? "connected · router live" : "connected · router offline");
+        setOnline(
+          true,
+          s.router_online ? "connected · router live" : "connected · router offline"
+        );
 
         $("wallet-addr").textContent = s.wallet || "—";
 
@@ -578,7 +1095,8 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
           sub.classList.toggle("empty-balance", s.credits === 0);
           const pieces = [];
           if (s.usd_value != null) pieces.push(fmtUsd(s.usd_value));
-          if (s.scrapes_remaining != null) pieces.push(fmtNum(s.scrapes_remaining) + " scrapes left");
+          if (s.scrapes_remaining != null)
+            pieces.push(fmtNum(s.scrapes_remaining) + " scrapes left");
           sub.textContent = pieces.join(" · ") || "—";
         }
 
@@ -599,9 +1117,20 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       } catch (err) {
         setOnline(false, "daemon unreachable");
       }
+
+      try {
+        if (activeTab === "provider") {
+          await pollProviderStats(false);
+        }
+      } catch (err) {
+        /* provider stats are best-effort — never crash tick */
+      }
     }
 
-    tick();
+    function loop() {
+      tick().finally(() => setTimeout(loop, 2000));
+    }
+    loop();
   </script>
 </body>
 </html>

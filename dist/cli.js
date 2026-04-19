@@ -33,12 +33,45 @@ const ERC20_ABI = [
 // --- CONFIG & PATHS ---
 const CONFIG_DIR = path.join(os.homedir(), ".aegis");
 const IDENTITY_PATH = path.join(CONFIG_DIR, "identity.json");
+const SERVICES_PATH = path.join(CONFIG_DIR, "services.json");
 const AEGIS_ROUTER_URL = process.env.AEGIS_ROUTER_URL ||
     "https://aegis-router-production.up.railway.app";
 const AEGIS_ROUTER_BASE = AEGIS_ROUTER_URL.replace(/\/$/, "");
 const AEGIS_EXECUTE_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/execute`;
 const AEGIS_FUND_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/fund`;
+const AEGIS_REGISTER_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/register`;
+const AEGIS_PAYOUT_CLAIM_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/payout/claim`;
+const AEGIS_REGISTRY_STATS_ENDPOINT = (id) => `${AEGIS_ROUTER_BASE}/v1/register/stats/${encodeURIComponent(id)}`;
 const AEGIS_BALANCE_ENDPOINT = (wallet) => `${AEGIS_ROUTER_BASE}/v1/balance/${wallet}`;
+// ════════════════════════════════════════════════════════════════════
+//  Provider secret keystore  (~/.aegis/services.json)
+// ════════════════════════════════════════════════════════════════════
+//
+// Secrets never live in process env and are never logged. We keep the
+// file at 0600 so only the daemon user can read it. The router stores
+// an encrypted copy of the same secret; this file is purely so the
+// local daemon can sign future privileged requests (claim, rotate).
+const SERVICE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
+function loadServices() {
+    if (!existsSync(SERVICES_PATH))
+        return {};
+    try {
+        const raw = readFileSync(SERVICES_PATH, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed;
+        }
+    }
+    catch (err) {
+        console.error("[Aegis] ⚠️ services.json corrupted; starting fresh.");
+    }
+    return {};
+}
+function saveServices(data) {
+    if (!existsSync(CONFIG_DIR))
+        mkdirSync(CONFIG_DIR, { recursive: true });
+    writeFileSync(SERVICES_PATH, JSON.stringify(data, null, 2), { mode: 0o600 });
+}
 const AEGIS_ENTERPRISE_WALLET = "0xDb11E8ba517ecB97C30a77b34C6492d2e15FD510";
 const RPC_URL = process.env.BASE_RPC_URL;
 const publicClient = createPublicClient({
@@ -417,6 +450,225 @@ async function startDaemonServer(port) {
             balance_fetched_at: bal.fetched_at,
             calls: callFeed,
         });
+    });
+    // ══════════════════════════════════════════════════════════════════
+    //  Provider Portal endpoints
+    // ══════════════════════════════════════════════════════════════════
+    // Atomic Claim & Register:
+    //   1. POST sample_request to the provider's own endpoint_url using
+    //      their secret as a Bearer token. If that fails, STOP — we never
+    //      touch the global registry with a broken configuration.
+    //   2. On local success, register with the Aegis Router.
+    //   3. On registry success, persist the plaintext secret locally so
+    //      the owner can later claim payouts from this machine.
+    app.post("/api/provider/register", async (req, res) => {
+        const { id, endpoint_url, payout_wallet, pricing_type, fixed_cost, secret, sample_request, } = req.body ?? {};
+        if (typeof id !== "string" || !SERVICE_ID_RE.test(id)) {
+            return res.status(400).json({
+                error: "INVALID_ID",
+                message: "id must be 2-64 chars of letters, digits, dashes or underscores.",
+            });
+        }
+        if (typeof endpoint_url !== "string" || !/^https?:\/\//i.test(endpoint_url)) {
+            return res.status(400).json({
+                error: "INVALID_ENDPOINT_URL",
+                message: "endpoint_url must be an absolute http(s) URL.",
+            });
+        }
+        if (typeof payout_wallet !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(payout_wallet)) {
+            return res.status(400).json({
+                error: "INVALID_PAYOUT_WALLET",
+                message: "payout_wallet must be a 0x-prefixed 40-char EVM address.",
+            });
+        }
+        if (pricing_type !== "FIXED" && pricing_type !== "DYNAMIC") {
+            return res.status(400).json({
+                error: "INVALID_PRICING_TYPE",
+                message: "pricing_type must be 'FIXED' or 'DYNAMIC'.",
+            });
+        }
+        let normalizedFixedCost = null;
+        if (pricing_type === "FIXED") {
+            if (typeof fixed_cost !== "number" ||
+                !Number.isInteger(fixed_cost) ||
+                fixed_cost <= 0) {
+                return res.status(400).json({
+                    error: "INVALID_FIXED_COST",
+                    message: "fixed_cost must be a positive integer when pricing_type is 'FIXED'.",
+                });
+            }
+            normalizedFixedCost = fixed_cost;
+        }
+        if (typeof secret !== "string" || secret.length === 0) {
+            return res.status(400).json({
+                error: "MISSING_SECRET",
+                message: "secret is required.",
+            });
+        }
+        if (sample_request === undefined ||
+            sample_request === null ||
+            typeof sample_request !== "object" ||
+            Array.isArray(sample_request)) {
+            return res.status(400).json({
+                error: "INVALID_SAMPLE_REQUEST",
+                message: "sample_request must be a JSON object.",
+            });
+        }
+        // ── Step 1: The Test ─────────────────────────────────────────
+        let localResponse;
+        try {
+            localResponse = await fetch(endpoint_url, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    Authorization: `Bearer ${secret}`,
+                },
+                body: JSON.stringify(sample_request),
+                signal: AbortSignal.timeout(15_000),
+            });
+        }
+        catch (err) {
+            return res.status(400).json({
+                error: "LOCAL_UNREACHABLE",
+                stage: "local_test",
+                message: `Could not reach ${endpoint_url}: ${err?.message ?? err}`,
+            });
+        }
+        // ── Step 2: The Halt ─────────────────────────────────────────
+        if (!localResponse.ok) {
+            const bodyText = await localResponse.text().catch(() => "");
+            return res.status(400).json({
+                error: "LOCAL_TEST_FAILED",
+                stage: "local_test",
+                upstream_status: localResponse.status,
+                message: `Your endpoint returned ${localResponse.status}. Fix it before registering.`,
+                upstream_body: bodyText.slice(0, 2_000),
+            });
+        }
+        // ── Step 3: The Sync ─────────────────────────────────────────
+        let routerResponse;
+        try {
+            routerResponse = await fetch(AEGIS_REGISTER_ENDPOINT, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    id,
+                    provider_wallet: payout_wallet,
+                    endpoint_url,
+                    pricing_type,
+                    fixed_cost: normalizedFixedCost,
+                    provider_secret: secret,
+                }),
+                signal: AbortSignal.timeout(30_000),
+            });
+        }
+        catch (err) {
+            return res.status(502).json({
+                error: "ROUTER_UNREACHABLE",
+                stage: "router_sync",
+                message: `Could not reach Aegis Router: ${err?.message ?? err}`,
+            });
+        }
+        const routerBody = await routerResponse.json().catch(() => ({}));
+        if (!routerResponse.ok) {
+            return res.status(routerResponse.status).json({
+                error: routerBody?.error ?? "ROUTER_ERROR",
+                stage: "router_sync",
+                message: routerBody?.message ?? "Router rejected the registration.",
+                router_body: routerBody,
+            });
+        }
+        // ── Step 4: The Persist ──────────────────────────────────────
+        try {
+            const services = loadServices();
+            services[id] = {
+                secret,
+                endpoint_url,
+                pricing_type,
+                fixed_cost: normalizedFixedCost,
+                payout_wallet,
+                registered_at: new Date().toISOString(),
+            };
+            saveServices(services);
+        }
+        catch (err) {
+            console.error("[Provider] Failed to persist services.json:", err);
+            return res.status(500).json({
+                error: "PERSIST_FAILED",
+                stage: "persist",
+                message: "Registered on the router, but failed to save the secret locally.",
+            });
+        }
+        return res.status(200).json({
+            ok: true,
+            stage: "complete",
+            service: routerBody?.service ?? {
+                id,
+                provider_wallet: payout_wallet,
+                endpoint_url,
+                pricing_type,
+                fixed_cost: normalizedFixedCost,
+            },
+            updated: !!routerBody?.updated,
+        });
+    });
+    app.post("/api/provider/claim", async (req, res) => {
+        const { id } = req.body ?? {};
+        if (typeof id !== "string" || !SERVICE_ID_RE.test(id)) {
+            return res.status(400).json({
+                error: "INVALID_ID",
+                message: "id must match the service id format.",
+            });
+        }
+        const services = loadServices();
+        const entry = services[id];
+        if (!entry || !entry.secret) {
+            return res.status(404).json({
+                error: "SECRET_NOT_FOUND",
+                message: `No locally stored secret for service "${id}". Register it here first.`,
+            });
+        }
+        let routerResponse;
+        try {
+            routerResponse = await fetch(AEGIS_PAYOUT_CLAIM_ENDPOINT, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id, provider_secret: entry.secret }),
+                signal: AbortSignal.timeout(120_000),
+            });
+        }
+        catch (err) {
+            return res.status(502).json({
+                error: "ROUTER_UNREACHABLE",
+                message: `Could not reach Aegis Router: ${err?.message ?? err}`,
+            });
+        }
+        const body = await routerResponse.json().catch(() => ({}));
+        return res.status(routerResponse.status).json(body);
+    });
+    // Proxy provider stats so the dashboard can stay same-origin.
+    app.get("/api/provider/stats/:id", async (req, res) => {
+        const { id } = req.params;
+        if (!SERVICE_ID_RE.test(id)) {
+            return res.status(400).json({ error: "INVALID_ID" });
+        }
+        try {
+            const r = await fetch(AEGIS_REGISTRY_STATS_ENDPOINT(id), {
+                signal: AbortSignal.timeout(8_000),
+            });
+            const body = await r.json().catch(() => ({}));
+            const services = loadServices();
+            return res.status(r.status).json({
+                ...body,
+                local_registered: !!services[id],
+            });
+        }
+        catch (err) {
+            return res.status(502).json({
+                error: "ROUTER_UNREACHABLE",
+                message: err?.message ?? "unreachable",
+            });
+        }
     });
     app.post("/v1/execute", async (req, res) => {
         const { service, request } = req.body;
