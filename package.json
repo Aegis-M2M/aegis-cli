@@ -1,29 +1,11 @@
 {
-  "name": "@aegis-m2m/cli",
-  "version": "1.0.0",
-  "description": "The Web Scraper & API Gateway for Autonomous Agents",
-  "type": "module",
-  "bin": {
-    "aegis-cli": "./dist/cli.js"
-  },
+  "name": "aegis-workspace",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "build": "tsc",
-    "start": "node dist/cli.js",
-    "dev": "tsc -w",
-    "e2e": "tsx --env-file=.env test/e2e.ts"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.3",
-    "cors": "^2.8.6",
-    "express": "^5.2.1",
-    "viem": "^2.21.0",
-    "zod": "^3.23.0"
-  },
-  "devDependencies": {
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/node": "^25.5.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.7.2"
+    "build": "npm run build --workspaces --if-present",
+    "e2e": "npm run e2e -w @aegis-m2m/cli"
   }
 }

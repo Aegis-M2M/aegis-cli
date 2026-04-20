@@ -44,6 +44,8 @@ import {
 import { base } from "viem/chains";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
+import { AegisClient, AegisError } from "@aegis-m2m/client";
+
 // ────────────────────────────────────────────────────────────────────────
 // Constants & paths
 // ────────────────────────────────────────────────────────────────────────
@@ -76,6 +78,50 @@ const FUNDER_PATH = path.join(CWD, "test-funder.json");
 const TEST_DIR = path.join(CWD, ".test-aegis");
 const DAEMON_PORT = 23448;
 const DAEMON_URL = `http://localhost:${DAEMON_PORT}`;
+
+// Single SDK instance shared by every test for talking to the ephemeral daemon.
+const client = new AegisClient({ daemonUrl: DAEMON_URL });
+
+// Shape returned by executeService(). Mirrors the fields the tests previously
+// read off a raw `Response` + parsed JSON body, so existing assertions keep
+// working unchanged whether the call succeeded or the daemon returned an error.
+interface ExecuteServiceResult {
+  ok: boolean;
+  status: number;
+  body: any;
+}
+
+/**
+ * Test-side wrapper around `client.execute()` that collapses both the success
+ * and the structured-error case into a uniform `{ ok, status, body }` shape.
+ *
+ * On HTTP errors the SDK throws `AegisError`; we unpack `err.status`/`err.body`
+ * so the existing `r.ok` / `r.status` / `body?.error` / `body?.required`
+ * assertions inside the test cases need no changes.
+ */
+async function executeService(params: {
+  service: string;
+  payload: any;
+  maxCredits?: number;
+}): Promise<ExecuteServiceResult> {
+  try {
+    const res = await client.execute({
+      service: params.service,
+      request: params.payload,
+      maxCredits: params.maxCredits,
+    });
+    return { ok: true, status: 200, body: res };
+  } catch (err) {
+    if (err instanceof AegisError) {
+      return {
+        ok: false,
+        status: err.status ?? 0,
+        body: err.body ?? { error: err.message },
+      };
+    }
+    throw err;
+  }
+}
 
 // 0.05 USDC in micro-units (USDC has 6 decimals). Sized so that a single
 // 1 USDC top-up of the master funder pays for ~20 runs of this test.
@@ -225,12 +271,10 @@ async function waitForStatus(timeoutMs = 30_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`${DAEMON_URL}/api/status`, {
-        signal: AbortSignal.timeout(2_000),
-      });
-      if (r.ok) return;
+      await client.status();
+      return;
     } catch {
-      // Daemon still booting.
+      // Daemon still booting — client.status() throws until /api/status is live.
     }
     await sleep(500);
   }
@@ -249,13 +293,10 @@ async function waitForCredits(
   let last = 0;
   while (Date.now() < deadline) {
     try {
-      const r = await fetch(`${DAEMON_URL}/api/status`);
-      if (r.ok) {
-        const body: any = await r.json();
-        const credits = typeof body.credits === "number" ? body.credits : 0;
-        last = credits;
-        if (credits >= minCredits) return credits;
-      }
+      const body: any = await client.status();
+      const credits = typeof body?.credits === "number" ? body.credits : 0;
+      last = credits;
+      if (credits >= minCredits) return credits;
     } catch {
       // keep polling
     }
@@ -324,15 +365,11 @@ async function runTests(serviceId: string): Promise<void> {
     `Execute service (should charge fixed_cost=${SERVICE_FIXED_COST_CREDITS} credits)…`,
   );
   {
-    const r = await fetch(`${DAEMON_URL}/v1/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        service: serviceId,
-        request: { hello: "world", nonce: Date.now() },
-      }),
+    const r = await executeService({
+      service: serviceId,
+      payload: { hello: "world", nonce: Date.now() },
     });
-    const body: any = await r.json().catch(() => ({}));
+    const body: any = r.body;
     if (!r.ok) {
       fail(`Execute failed: ${r.status} ${JSON.stringify(body).slice(0, 500)}`);
     }
@@ -355,16 +392,12 @@ async function runTests(serviceId: string): Promise<void> {
     `Consumer over-limit rejection (maxCredits=${EXECUTE_MAX_CREDITS_BELOW_COST} vs cost=${SERVICE_FIXED_COST_CREDITS})…`,
   );
   {
-    const r = await fetch(`${DAEMON_URL}/v1/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        service: serviceId,
-        request: { hello: "world", nonce: Date.now() },
-        maxCredits: EXECUTE_MAX_CREDITS_BELOW_COST,
-      }),
+    const r = await executeService({
+      service: serviceId,
+      payload: { hello: "world", nonce: Date.now() },
+      maxCredits: EXECUTE_MAX_CREDITS_BELOW_COST,
     });
-    const body: any = await r.json().catch(() => ({}));
+    const body: any = r.body;
     if (r.ok) {
       fail(
         `Expected rejection; got 200 OK ${JSON.stringify(body).slice(0, 300)}`,
@@ -417,9 +450,7 @@ async function runTests(serviceId: string): Promise<void> {
     "Execution refund (provider returns 500; expect 0 net debit)…",
   );
   {
-    const statusBefore: any = await (
-      await fetch(`${DAEMON_URL}/api/status`)
-    ).json();
+    const statusBefore: any = await client.status();
     const balanceBefore = Number(statusBefore?.credits ?? NaN);
     if (!Number.isFinite(balanceBefore)) {
       fail(
@@ -427,24 +458,18 @@ async function runTests(serviceId: string): Promise<void> {
       );
     }
 
-    const r = await fetch(`${DAEMON_URL}/v1/execute`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        service: serviceId,
-        request: { hello: "world", nonce: Date.now() },
-      }),
+    const r = await executeService({
+      service: serviceId,
+      payload: { hello: "world", nonce: Date.now() },
     });
     if (r.ok) {
       fail(`Expected execution failure; got 200 OK`);
     }
-    const errBody: any = await r.json().catch(() => ({}));
+    const errBody: any = r.body;
 
     await sleep(3_500);
 
-    const statusAfter: any = await (
-      await fetch(`${DAEMON_URL}/api/status`)
-    ).json();
+    const statusAfter: any = await client.status();
     const balanceAfter = Number(statusAfter?.credits ?? NaN);
     if (!Number.isFinite(balanceAfter)) {
       fail(

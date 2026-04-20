@@ -5,3 +5,7 @@ identity.json
 # E2E test artefacts (master funder key + ephemeral sandbox)
 test-funder.json
 .test-aegis/
+
+# Workspace package build outputs / local installs
+packages/*/dist
+packages/*/node_modules
