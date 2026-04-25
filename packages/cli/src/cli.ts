@@ -10,6 +10,7 @@ import { base } from "viem/chains";
 import { randomUUID } from "crypto";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -329,8 +330,15 @@ function extractToolResult(serviceId: string, data: unknown): string {
 function buildToolsFromServicesCatalog(): McpToolDescriptor[] {
   const services = loadServices();
   const tools: McpToolDescriptor[] = [];
+
+  // Prevent Claude from seeing the internal LLM routing services as tools
+  const IGNORED_SERVICES = ["aegis-claude", "aegis-openai", "aegis-perplexity"];
+
   for (const [id, meta] of Object.entries(services) as [string, any][]) {
+    // 1. Skip invalid IDs or internal LLM proxies
     if (!SERVICE_ID_RE.test(id)) continue;
+    if (IGNORED_SERVICES.includes(id)) continue;
+
     let inputSchema: Record<string, unknown> = { type: "object" };
     if (meta?.expected_schema) {
       try {
@@ -346,10 +354,14 @@ function buildToolsFromServicesCatalog(): McpToolDescriptor[] {
         /* fallback */
       }
     }
+
+    // 2. Use the clean, original description
     tools.push({
       name: id,
       description:
-        typeof meta?.description === "string" ? meta.description : undefined,
+        typeof meta?.description === "string"
+          ? meta.description
+          : "Aegis Hub tool.",
       inputSchema,
     });
   }
@@ -729,6 +741,17 @@ async function startDaemonServer(port: number) {
 
 async function main() {
   const args = process.argv.slice(2);
+
+  // --- NEW: CLAUDE DESKTOP STDIO MODE ---
+  if (args.includes("--stdio")) {
+    const server = createSessionMcpServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+    console.error("🚀 Aegis Hub Engine Live (MCP Stdio Mode)");
+    return; // Exit here, do not start the Express web server
+  }
+  // --------------------------------------
+
   const portIndex = args.indexOf("--port");
   const port = portIndex > -1 ? parseInt(args[portIndex + 1]) : 23447;
   await startDaemonServer(port);
