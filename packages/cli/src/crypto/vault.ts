@@ -75,6 +75,99 @@ export function getSecret(key: string): string | null {
   }
 }
 
+/** Top-level property names from `vault.json` (whether or not values are populated). */
+export function getAllVaultKeys(): string[] {
+  try {
+    if (!fs.existsSync(VAULT_PATH)) return [];
+    const vault = JSON.parse(fs.readFileSync(VAULT_PATH, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    return Object.keys(vault);
+  } catch (e) {
+    console.error("[Vault] getAllVaultKeys:", e);
+    return [];
+  }
+}
+
+/**
+ * Calculates the Levenshtein distance between two strings.
+ * Returns the number of edits required to transform 'a' into 'b'.
+ */
+function getLevenshteinDistance(a: string, b: string): number {
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+
+  const matrix = Array.from({ length: a.length + 1 }, () =>
+    Array(b.length + 1).fill(0),
+  );
+  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[i][j] = Math.min(
+        matrix[i - 1][j] + 1, // deletion
+        matrix[i][j - 1] + 1, // insertion
+        matrix[i - 1][j - 1] + cost, // substitution
+      );
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
+/**
+ * Resolve a manifest secret name (e.g. `POLYGON_API_KEY`) to a value
+ * stored in the local vault only (no process.env).
+ * Strategy: exact match → short form → standard suffixes → Levenshtein fuzzy match over vault keys.
+ */
+export function resolveVaultSecret(secretName: string): string | null {
+  const direct = getSecret(secretName);
+  if (direct) return direct;
+
+  const normalize = (s: string) =>
+    s.toUpperCase().replace(/_(API_KEY|KEY|SECRET|TOKEN)$/, "");
+  const targetShort = normalize(secretName);
+
+  const shortMatch = getSecret(targetShort);
+  if (shortMatch) return shortMatch;
+
+  const suffixes = ["_API_KEY", "_KEY", "_SECRET", "_TOKEN"];
+  for (const sfx of suffixes) {
+    const match = getSecret(targetShort + sfx);
+    if (match) return match;
+  }
+
+  const vaultKeys = getAllVaultKeys();
+  const candidateKeys = vaultKeys.filter((k) => /KEY|SECRET|TOKEN|API/i.test(k));
+
+  let bestMatch: string | null = null;
+  let highestSimilarity = 0;
+  const SIMILARITY_THRESHOLD = 0.8;
+
+  for (const candidate of candidateKeys) {
+    const candidateShort = normalize(candidate);
+    const distance = getLevenshteinDistance(targetShort, candidateShort);
+    const maxLen = Math.max(targetShort.length, candidateShort.length);
+    const similarity = maxLen === 0 ? 1 : 1 - distance / maxLen;
+
+    if (similarity > highestSimilarity && similarity >= SIMILARITY_THRESHOLD) {
+      highestSimilarity = similarity;
+      bestMatch = candidate;
+    }
+  }
+
+  if (bestMatch) {
+    console.error(
+      `[Vault] 🪄 Fuzzy matched requested secret '${secretName}' to vault key '${bestMatch}' (Similarity: ${(highestSimilarity * 100).toFixed(1)}%)`,
+    );
+    return getSecret(bestMatch);
+  }
+
+  return null;
+}
+
 /**
  * For each vault key matching `*_API_KEY` with a non-empty value, returns the
  * provider-style prefix (e.g. POLYGON_API_KEY → POLYGON). Used as Router `key_hints`.

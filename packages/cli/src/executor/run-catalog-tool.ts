@@ -2,6 +2,7 @@ import {
   formatUserInstructionsForSecrets,
   getSecret,
   listApiKeyProviderHintsFromVault,
+  resolveVaultSecret,
 } from "../crypto/vault.js";
 import { SERVICE_ID_RE } from "../config.js";
 import {
@@ -191,27 +192,6 @@ function toolSuccessContent(
   const payload = (rawResponse as { data?: unknown })?.data ?? rawResponse;
   const text = extractToolResult(serviceId, payload);
   return { content: [{ type: "text", text }] };
-}
-
-/**
- * Resolve a manifest secret name (e.g. `POLYGON_API_KEY`) to a value
- * stored in the local vault. The vault uses the same exact key by
- * convention, but we also accept the stripped prefix (`POLYGON`) so
- * users who store hints rather than full env names still work.
- */
-function resolveVaultSecret(secretName: string): string | null {
-  const direct = getSecret(secretName);
-  if (direct) return direct;
-  const stripped = secretName
-    .toUpperCase()
-    .replace(/_API_KEY$/, "")
-    .replace(/_SECRET$/, "")
-    .replace(/_TOKEN$/, "")
-    .replace(/_KEY$/, "");
-  if (stripped && stripped !== secretName.toUpperCase()) {
-    return getSecret(stripped);
-  }
-  return null;
 }
 
 async function runAegisOmniCatalogInvocation(

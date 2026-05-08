@@ -1,6 +1,6 @@
 import { AEGIS_ROUTER_BASE } from "../config.js";
 import { userAccount } from "../crypto/identity.js";
-import { getSecret } from "../crypto/vault.js";
+import { getSecret, resolveVaultSecret } from "../crypto/vault.js";
 import { signAegisRequestHeaders } from "../crypto/signer.js";
 import { executeAegisRequest } from "./router-client.js";
 
@@ -294,11 +294,10 @@ export function injectSecretsIntoCompiled(
 } {
   const secrets: Record<string, string> = {};
   for (const secretName of secretKeys) {
-    const keyVal = process.env[secretName];
+    const v = resolveVaultSecret(secretName);
     console.error(
-      `[Hub] Attempting to inject ${secretName}... (Found: ${!!keyVal})`,
+      `[Hub] Attempting to inject ${secretName}... (Found: ${!!v})`,
     );
-    const v = getSecret(secretName);
     if (!v) throw new Error(`Missing vault key: ${secretName}`);
     secrets[secretName] = v;
   }
