@@ -8,7 +8,7 @@
 //      First run generates it and exits, asking the operator to seed it with
 //      ~1 USDC on Base + a whisker of ETH for gas. Subsequent runs reuse it.
 //
-//   2. Ephemeral Daemon — spawns `npx tsx src/cli.ts daemon` inside a
+//   2. Ephemeral Daemon — spawns `npx tsx src/main.ts` inside a
 //      throwaway AEGIS_HOME directory so the test never touches ~/.aegis.
 //      The daemon generates its own Transit Wallet on first start.
 //
@@ -221,12 +221,12 @@ function loadOrCreateFunder(): FunderFile {
 // ────────────────────────────────────────────────────────────────────────
 
 function spawnDaemon(): ChildProcess {
-  log("DAEMON", `Spawning: npx tsx src/cli.ts daemon --port ${DAEMON_PORT}`);
+  log("DAEMON", `Spawning: npx tsx src/main.ts --port ${DAEMON_PORT}`);
   log("DAEMON", `AEGIS_HOME = ${TEST_DIR}`);
 
   const child = spawn(
     "npx",
-    ["tsx", "src/cli.ts", "daemon", "--port", String(DAEMON_PORT)],
+    ["tsx", "src/main.ts", "--port", String(DAEMON_PORT)],
     {
       cwd: CWD,
       env: {

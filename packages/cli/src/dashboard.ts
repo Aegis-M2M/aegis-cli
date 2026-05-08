@@ -262,145 +262,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
     .balance-sub .sep { color: var(--text-faint); margin: 0 8px; }
     .empty-balance { color: var(--warn); }
 
-    .feed-wrap { grid-column: 1 / -1; }
-    .feed-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-    }
-    .feed-header h2 { margin: 0; }
-    .feed-meta { color: var(--text-faint); font-size: 12px; font-family: var(--mono); }
-    .feed {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      max-height: 420px;
-      overflow-y: auto;
-      margin: 0 -8px;
-      padding: 0 8px;
-    }
-    .feed::-webkit-scrollbar { width: 8px; }
-    .feed::-webkit-scrollbar-thumb {
-      background: var(--border-strong);
-      border-radius: 4px;
-    }
-    .call {
-      display: grid;
-      grid-template-columns: auto 1fr auto auto auto;
-      align-items: center;
-      gap: 14px;
-      padding: 11px 12px;
-      background: var(--bg-elev-2);
-      border: 1px solid var(--border);
-      border-radius: 9px;
-      font-size: 13px;
-      animation: slideIn 0.25s ease;
-    }
-    @keyframes slideIn {
-      from { opacity: 0; transform: translateY(-4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-    .call .status-dot {
-      width: 7px; height: 7px;
-      border-radius: 50%;
-      flex-shrink: 0;
-    }
-    .call.ok .status-dot { background: var(--ok); box-shadow: 0 0 8px rgba(124,249,208,0.5); }
-    .call.err .status-dot { background: var(--danger); box-shadow: 0 0 8px rgba(255,107,107,0.5); }
-    .call.pending .status-dot {
-      background: var(--warn);
-      box-shadow: 0 0 8px rgba(255,184,107,0.5);
-      animation: pulse 1s ease-in-out infinite;
-    }
-    .call .service {
-      font-family: var(--mono);
-      font-size: 11.5px;
-      padding: 2px 7px;
-      border-radius: 4px;
-      background: rgba(255,255,255,0.04);
-      color: var(--text-dim);
-      border: 1px solid var(--border);
-      white-space: nowrap;
-    }
-    .call .detail {
-      color: var(--text-dim);
-      font-family: var(--mono);
-      font-size: 12px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      min-width: 0;
-    }
-    .call .credits {
-      font-family: var(--mono);
-      font-size: 12px;
-      color: var(--accent);
-      white-space: nowrap;
-    }
-    .call.err .credits { color: var(--text-faint); }
-    .call .duration {
-      font-family: var(--mono);
-      font-size: 11.5px;
-      color: var(--text-faint);
-      white-space: nowrap;
-    }
-    .call .time {
-      font-family: var(--mono);
-      font-size: 11.5px;
-      color: var(--text-faint);
-      white-space: nowrap;
-    }
-    .feed-empty {
-      padding: 36px 14px;
-      text-align: center;
-      color: var(--text-faint);
-      font-size: 13px;
-      background: var(--bg-elev-2);
-      border: 1px dashed var(--border-strong);
-      border-radius: 10px;
-    }
-    .feed-empty code {
-      display: inline-block;
-      margin-top: 8px;
-      padding: 6px 10px;
-      font-family: var(--mono);
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      color: var(--text-dim);
-      font-size: 12px;
-    }
-
-    .stats {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 14px;
-      margin: 22px 0;
-    }
-    @media (max-width: 700px) {
-      .stats { grid-template-columns: repeat(2, 1fr); }
-    }
-    .stat {
-      background: var(--bg-elev);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px 16px;
-    }
-    .stat-label {
-      color: var(--text-faint);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
-    .stat-value {
-      font-family: var(--mono);
-      font-size: 20px;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-
     /* Provider form */
     .form-grid {
       display: grid;
@@ -561,39 +422,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
           </div>
         </div>
       </div>
-
-      <div class="stats">
-        <div class="stat">
-          <div class="stat-label">Total Calls</div>
-          <div class="stat-value" id="stat-total">0</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Success</div>
-          <div class="stat-value" id="stat-ok">0</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Errors</div>
-          <div class="stat-value" id="stat-err">0</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">Credits Spent</div>
-          <div class="stat-value" id="stat-spent">0</div>
-        </div>
-      </div>
-
-      <div class="card feed-wrap">
-        <div class="feed-header">
-          <h2>Recent API Calls</h2>
-          <div class="feed-meta" id="feed-meta">—</div>
-        </div>
-        <div id="feed" class="feed">
-          <div class="feed-empty" id="feed-empty">
-            No API calls yet. Fire one with:
-            <br/>
-            <code>curl -X POST http://localhost:23447/v1/execute -H "Content-Type: application/json" -d '{"service":"aegis-parse","request":{"url":"https://example.com"}}'</code>
-          </div>
-        </div>
-      </div>
     </section>
 
     <!-- ════════════════════════════════════════════════════════════ -->
@@ -646,14 +474,12 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
               <span class="help">Sent as <code>Authorization: Bearer</code> to your endpoint. Stored encrypted on the router. Not used to authenticate you to Aegis — your wallet does that.</span>
             </div>
             <div class="field full">
-              <label for="f-sample">Sample Request (JSON)</label>
-              <textarea id="f-sample" name="sample_request" spellcheck="false" required>{ "hello": "world" }</textarea>
-              <span class="help">We fire this against your endpoint to verify connectivity before registering.</span>
+              <span class="help">Registration checks <code>GET /health</code> on the same origin as your tool URL (for example <code>http://host:3101/health</code> when the tool is <code>http://host:3101/api/…</code>). If <code>/health</code> is missing (404), we try one <code>GET</code> to the origin instead.</span>
             </div>
           </div>
           <div class="form-actions">
-            <button id="register-btn" class="btn primary" type="submit">Test &amp; Register</button>
-            <span id="register-status" class="form-status">Fill out the form, then press Register. We test your endpoint before touching the on-chain registry.</span>
+            <button id="register-btn" class="btn primary" type="submit">Register</button>
+            <span id="register-status" class="form-status">Fill out the form, then press Register. We verify reachability via <code>/health</code> before touching the on-chain registry.</span>
           </div>
         </form>
       </div>
@@ -733,21 +559,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       (n == null || Number.isNaN(n)) ? "—" : "$" + Number(n).toFixed(4);
     const creditsToUsd = (c) =>
       typeof c === "number" && Number.isFinite(c) ? c / CREDITS_PER_USD : null;
-    const fmtTime = (ms) => {
-      const d = new Date(ms);
-      const pad = (x) => String(x).padStart(2, "0");
-      return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
-    };
-    const fmtDur = (ms) => {
-      if (ms == null) return "";
-      if (ms < 1000) return ms + "ms";
-      return (ms / 1000).toFixed(2) + "s";
-    };
-    const shortenDetail = (d) => {
-      if (!d) return "";
-      if (d.length <= 80) return d;
-      return d.slice(0, 77) + "…";
-    };
 
     // ── tabs ───────────────────────────────────────────────────────
     const tabs = document.querySelectorAll(".tab");
@@ -795,68 +606,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       }
     }
 
-    // ── consumer: call feed ────────────────────────────────────────
-    function renderFeed(calls) {
-      const feed = $("feed");
-      const empty = $("feed-empty");
-      if (!calls || calls.length === 0) {
-        if (empty) empty.style.display = "";
-        Array.from(feed.querySelectorAll(".call")).forEach((el) => el.remove());
-        return;
-      }
-      if (empty) empty.style.display = "none";
-
-      const sorted = calls.slice().sort((a, b) => b.started_at - a.started_at);
-
-      const existing = new Map(
-        Array.from(feed.querySelectorAll(".call")).map((el) => [el.dataset.id, el])
-      );
-      const frag = document.createDocumentFragment();
-
-      for (const c of sorted) {
-        let el = existing.get(c.id);
-        if (!el) {
-          el = document.createElement("div");
-          el.className = "call";
-          el.dataset.id = c.id;
-          el.innerHTML =
-            '<span class="status-dot"></span>' +
-            '<span class="detail"></span>' +
-            '<span class="service"></span>' +
-            '<span class="credits"></span>' +
-            '<span class="duration"></span>' +
-            '<span class="time"></span>';
-        } else {
-          existing.delete(c.id);
-        }
-
-        const statusClass = c.status === "ok" ? "ok" : c.status === "err" ? "err" : "pending";
-        el.classList.remove("ok", "err", "pending");
-        el.classList.add(statusClass);
-
-        el.querySelector(".service").textContent = c.service || "?";
-        el.querySelector(".detail").textContent = shortenDetail(c.detail || "");
-        el.querySelector(".detail").title = c.detail || "";
-
-        const creditsEl = el.querySelector(".credits");
-        if (c.status === "ok" && c.credits_charged != null) {
-          creditsEl.textContent = "−" + fmtNum(c.credits_charged) + " cr";
-        } else if (c.status === "err") {
-          creditsEl.textContent = "refunded";
-        } else {
-          creditsEl.textContent = "…";
-        }
-
-        el.querySelector(".duration").textContent = fmtDur(c.duration_ms);
-        el.querySelector(".time").textContent = fmtTime(c.started_at);
-
-        frag.appendChild(el);
-      }
-
-      existing.forEach((el) => el.remove());
-      feed.appendChild(frag);
-    }
-
     // ── provider: form wiring ──────────────────────────────────────
     const pricingEl = $("f-pricing");
     const costFieldEl = $("field-cost");
@@ -885,7 +634,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       const endpoint_url = $("f-endpoint").value.trim();
       const pricing_type = pricingEl.value;
       const secret = $("f-secret").value;
-      const rawSample = $("f-sample").value;
 
       if (!id || !endpoint_url || !secret) {
         setStatus($("register-status"), "err", "Fill in every field.");
@@ -902,21 +650,9 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
         fixed_cost = n;
       }
 
-      let sample_request;
-      try {
-        sample_request = JSON.parse(rawSample);
-      } catch (err) {
-        setStatus($("register-status"), "err", "Sample Request is not valid JSON.");
-        return;
-      }
-      if (!sample_request || typeof sample_request !== "object" || Array.isArray(sample_request)) {
-        setStatus($("register-status"), "err", "Sample Request must be a JSON object.");
-        return;
-      }
-
       busyState.register = true;
       registerBtn.disabled = true;
-      setStatus($("register-status"), "busy", "Testing your endpoint…");
+      setStatus($("register-status"), "busy", "Checking service health…");
 
       try {
         const r = await fetch("/api/provider/register", {
@@ -928,7 +664,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
             pricing_type,
             fixed_cost,
             secret,
-            sample_request,
           }),
         });
         const body = await r.json().catch(() => ({}));
@@ -1119,21 +854,6 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
             pieces.push(fmtNum(s.scrapes_remaining) + " scrapes left");
           sub.textContent = pieces.join(" · ") || "—";
         }
-
-        const calls = s.calls || [];
-        $("stat-total").textContent = fmtNum(calls.length);
-        $("stat-ok").textContent = fmtNum(calls.filter((c) => c.status === "ok").length);
-        $("stat-err").textContent = fmtNum(calls.filter((c) => c.status === "err").length);
-        $("stat-spent").textContent = fmtNum(
-          calls.reduce((sum, c) => sum + (c.credits_charged || 0), 0)
-        );
-
-        $("feed-meta").textContent =
-          calls.length > 0
-            ? "showing last " + calls.length + " call" + (calls.length === 1 ? "" : "s")
-            : "—";
-
-        renderFeed(calls);
       } catch (err) {
         setOnline(false, "daemon unreachable");
       }

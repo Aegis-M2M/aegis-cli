@@ -19,6 +19,5 @@ COPY packages/ ./packages/
 # 4. Expose the daemon port
 EXPOSE 23447
 
-# 5. Updated command to point to the new nested entry point
-# Using 'daemon' instead of 'start' to match your latest CLI logic
-CMD ["npx", "tsx", "packages/cli/src/cli.ts", "daemon", "--port", "23447"]
+# 5. Hub daemon: entry is main.ts (replaces legacy cli.ts)
+CMD ["npx", "tsx", "packages/cli/src/main.ts", "--port", "23447"]

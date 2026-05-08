@@ -3,15 +3,15 @@
   "version": "1.0.0",
   "description": "The Web Scraper & API Gateway for Autonomous Agents",
   "type": "module",
-  "main": "./dist/cli.js",
+  "main": "./dist/main.js",
   "bin": {
-    "aegis-cli": "./dist/cli.js"
+    "aegis-cli": "./dist/main.js"
   },
   "scripts": {
     "build": "tsc",
-    "start": "node dist/cli.js",
+    "start": "node dist/main.js",
     "dev": "tsc -w",
-    "e2e": "tsx --env-file=.env test/e2e.ts"
+    "e2e": "tsx --env-file=.env test/e2e.ts",
   },
   "dependencies": {
     "@aegis-m2m/client": "*",
