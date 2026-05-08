@@ -6,7 +6,6 @@ export const CONFIG_DIR = process.env.AEGIS_HOME
   : path.join(os.homedir(), ".aegis");
 
 export const IDENTITY_PATH = path.join(CONFIG_DIR, "identity.json");
-export const SERVICES_PATH = path.join(CONFIG_DIR, "services.json");
 export const VAULT_PATH = path.join(CONFIG_DIR, "vault.json");
 
 export const BASE_USDC =
@@ -20,19 +19,8 @@ export const AEGIS_ROUTER_URL =
 export const AEGIS_ROUTER_BASE = AEGIS_ROUTER_URL.replace(/\/$/, "");
 export const AEGIS_EXECUTE_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/execute`;
 export const AEGIS_FUND_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/fund`;
-export const AEGIS_REGISTER_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/register`;
-export const AEGIS_REGISTRY_STATS_ENDPOINT = (id: string) =>
-  `${AEGIS_ROUTER_BASE}/v1/register/stats/${encodeURIComponent(id)}`;
 export const AEGIS_BALANCE_ENDPOINT = (wallet: string) =>
   `${AEGIS_ROUTER_BASE}/v1/balance/${wallet}`;
-export const AEGIS_HUB_CATALOG_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/hub/catalog`;
-export const AEGIS_HUB_CATALOG_STUBS_ENDPOINT = `${AEGIS_ROUTER_BASE}/v1/hub/catalog/stubs`;
-/** Merged Virtual SDK for a provider (relational hub: all doc pages aggregated). */
-export const AEGIS_HUB_PROVIDER_MANIFEST_ENDPOINT = (providerId: string) =>
-  `${AEGIS_ROUTER_BASE}/v1/hub/provider/${encodeURIComponent(providerId)}/manifest`;
-/** Legacy alias; same JSON as {@link AEGIS_HUB_PROVIDER_MANIFEST_ENDPOINT}. */
-export const AEGIS_HUB_MANIFEST_ENDPOINT = (capabilityId: string) =>
-  `${AEGIS_ROUTER_BASE}/v1/hub/manifest/${encodeURIComponent(capabilityId)}`;
 
 export const SERVICE_ID_RE = /^[a-z0-9][a-z0-9_-]{1,63}$/i;
 

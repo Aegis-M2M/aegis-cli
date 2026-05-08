@@ -1,30 +1,31 @@
+// ════════════════════════════════════════════════════════════════════
+//  Core Three MCP dispatch
+// ════════════════════════════════════════════════════════════════════
+//
+// The MCP layer (`mcp-server.ts`) only ever forwards calls for these
+// three tools to this module:
+//
+//   - `aegis-omni-tool`  — universal triage; the Proxy chooses
+//                          platform / local-delegated / relay execution
+//                          and may hand back a `delegate_request` that
+//                          we run here against the user's vault keys.
+//   - `aegis-search`     — direct router call (Tavily/Perplexity).
+//   - `aegis-parse`      — direct router call (Hydra parse worker).
+//
+// All other discovery (JIT, manifest hydration, micro-bridge,
+// services.json) was deleted: third-party tools no longer register
+// themselves through the daemon and Cursor doesn't see anything
+// outside the Core Three.
+
 import {
   formatUserInstructionsForSecrets,
-  getSecret,
   listApiKeyProviderHintsFromVault,
   resolveVaultSecret,
 } from "../crypto/vault.js";
-import { SERVICE_ID_RE } from "../config.js";
 import {
-  catalogEntryNeedsHubHydration,
-  hydrateHubCapabilityManifest,
-  loadServices,
-  tryApplyBridgeResponseFromRouterResult,
-} from "../services/catalog.js";
-import {
-  catalogEntryHasExecutableManifest,
-  executeCapabilityManifestLocal,
-  executeLocalPreflight,
-  sendLocalExecutorTelemetry,
-  buildInjectedSecretsMap,
   injectSecretsIntoCompiled,
   cleanupCompiledRequestPlaceholders,
 } from "./preflight.js";
-import {
-  canAttemptJitMicroBridge,
-  runJitMicroBridgeAndMergeCatalog,
-  stripJitKeysFromArgs,
-} from "./jit-micro-bridge.js";
 import {
   executeAegisRequest,
   parseRouterExecuteError,
@@ -62,14 +63,6 @@ export function extractToolResult(serviceId: string, data: unknown): string {
     }
     if (lines.length > 0) return lines.join("\n");
   }
-  if (serviceId === "aegis-composio") {
-    const parsed = data as { redirectUrl?: string };
-    if (
-      typeof parsed?.redirectUrl === "string" &&
-      parsed.redirectUrl.length > 0
-    )
-      return `Please login here: ${parsed.redirectUrl}`;
-  }
   if (serviceId === "aegis-omni-tool") {
     const parsed =
       data && typeof data === "object" && !Array.isArray(data)
@@ -97,6 +90,14 @@ export function extractToolResult(serviceId: string, data: unknown): string {
         `provider_id=${String(parsed.provider_id ?? "")} endpoint_id=${String(parsed.endpoint_id ?? "")}`,
       );
     }
+    if (branch === "relay") {
+      const relayer = parsed.relayed_by;
+      const fee = parsed.fee_charged;
+      const exec = parsed.exec_ms;
+      lines.push(
+        `relay: by=${String(relayer ?? "?")} fee=${String(fee ?? "?")} exec_ms=${String(exec ?? "?")}`,
+      );
+    }
     const upstream = parsed.upstream_data;
     if (upstream !== undefined) {
       lines.push("");
@@ -107,6 +108,10 @@ export function extractToolResult(serviceId: string, data: unknown): string {
       );
       if (branch === "local") {
         lines.push("\n[Context: This data was fetched locally via your Aegis Hub]");
+      } else if (branch === "relay") {
+        lines.push(
+          "\n[Context: This data was relayed by another Aegis user's daemon. The relayer was paid out of your credit balance.]",
+        );
       }
     } else if (branch === "local") {
       lines.push(
@@ -129,57 +134,17 @@ export function extractToolResult(serviceId: string, data: unknown): string {
   }
 }
 
-type AuthStrategy = "platform" | "user" | "hybrid";
-
-function catalogOptionalSecretKeys(
-  meta: Record<string, unknown> | undefined,
-): string[] {
-  if (!meta) return [];
-  const opt = meta.optional_secrets;
-  const legacy = meta.required_secrets;
-  const a = Array.isArray(opt) ? opt : [];
-  const b = Array.isArray(legacy) ? legacy : [];
-  return [
-    ...new Set(
-      [...a, ...b].filter(
-        (k): k is string => typeof k === "string" && k.length > 0,
-      ),
-    ),
-  ];
-}
-
-function hasAllOptionalSecrets(secretKeys: string[]): boolean {
-  return secretKeys.every((k) => getSecret(k) != null);
-}
-
 function guidanceForMissingPlatformKey(
   serviceId: string,
-  optionalSecretKeys: string[],
   upstreamMessage: string,
 ): string {
-  const keys =
-    optionalSecretKeys.length > 0
-      ? optionalSecretKeys.join(", ")
-      : "the upstream API credential(s) for this tool";
   const lines = [
     `MISSING_PLATFORM_KEY (${serviceId})`,
     upstreamMessage ? `Detail: ${upstreamMessage}` : "",
     "",
-    "The user asked to query this service, but the required credential is missing: there is no platform-level key configured, and nothing was supplied from your local Aegis vault for this workspace.",
+    "The user asked to query this service, but the required credential is missing on the Aegis platform.",
     "",
-    "REQUIRED — follow in order:",
-    "",
-    `1. Ask the user directly whether they will add this credential (${keys}) to their Aegis vault (see “How the user adds the key” below). Wait for their answer before doing anything else.`,
-    "",
-    "2. Do not substitute `aegis-search`, web search, or any other tool to mimic this integration until the user has replied. Silent fallback is wrong: you must ask first.",
-    "",
-    "3. If and only if the user declines to add a key, or explicitly tells you to skip this API and use alternatives, you may then use tools that need no private credential (e.g. `aegis-search`) or summarize what is blocked.",
-    "",
-    "4. If they add the key, retry this tool call.",
-    "",
-    "---",
-    "",
-    formatUserInstructionsForSecrets(optionalSecretKeys),
+    "Surface this to the user before falling back to substitute tools.",
   ];
   return lines.filter((l) => l !== "").join("\n");
 }
@@ -188,12 +153,18 @@ function toolSuccessContent(
   serviceId: string,
   rawResponse: unknown,
 ): { content: { type: "text"; text: string }[] } {
-  tryApplyBridgeResponseFromRouterResult(serviceId, rawResponse);
   const payload = (rawResponse as { data?: unknown })?.data ?? rawResponse;
   const text = extractToolResult(serviceId, payload);
   return { content: [{ type: "text", text }] };
 }
 
+// ─── aegis-omni-tool ─────────────────────────────────────────────────
+//
+// The proxy returns one of three branches:
+//   - "platform"  → upstream call already executed on the proxy.
+//   - "local"     → proxy chose user-key delegation; it returned a
+//                   `delegate_request` we now run with vault secrets.
+//   - "blocked"   → no key available anywhere; bubble the message up.
 async function runAegisOmniCatalogInvocation(
   args: Record<string, unknown>,
 ): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
@@ -444,306 +415,16 @@ async function runAegisOmniCatalogInvocation(
   }
 }
 
-export async function runCatalogToolCall(
-  name: string,
+// ─── aegis-search / aegis-parse ─────────────────────────────────────
+//
+// Dumb proxies for `/v1/execute`. The router debits, signs, forwards;
+// we just unwrap the response into MCP's text-only content shape.
+async function runDirectProxyTool(
+  name: "aegis-search" | "aegis-parse",
   args: Record<string, unknown>,
 ): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
-  if (name === "aegis-omni-tool") {
-    return runAegisOmniCatalogInvocation(args);
-  }
-  const catalog = loadServices();
-  let metaRaw = catalog[name] as Record<string, unknown> | undefined;
-  let callArgs = args;
-
-  if (!metaRaw && SERVICE_ID_RE.test(name)) {
-    console.error(`[JIT] Unknown ID "${name}". Attempting Hub discovery...`);
-    try {
-      await hydrateHubCapabilityManifest(name);
-      const refreshed = loadServices();
-      metaRaw = refreshed[name] as Record<string, unknown> | undefined;
-      if (metaRaw) {
-        console.error(
-          `[JIT] Successfully discovered and hydrated "${name}" from Hub.`,
-        );
-      }
-    } catch (e: unknown) {
-      console.warn(`[JIT] Hub discovery failed for "${name}":`, e);
-    }
-
-    if (!metaRaw && canAttemptJitMicroBridge(args)) {
-      try {
-        const r = await runJitMicroBridgeAndMergeCatalog({
-          capabilityId: name,
-          args,
-        });
-        console.error(
-          `[JIT] Micro-Bridge materialized "${name}" from ${r.docUrl}`,
-        );
-        metaRaw = loadServices()[name] as Record<string, unknown> | undefined;
-        callArgs = stripJitKeysFromArgs(args);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn(`[JIT] Micro-Bridge failed for "${name}":`, e);
-        return {
-          content: [
-            {
-              type: "text",
-              text: [
-                `Unknown Aegis service: ${name} (hub miss).`,
-                "",
-                "On-demand Micro-Bridge also failed:",
-                msg,
-                "",
-                "Pass tool args: `user_intent` plus `doc_url` (or `single_url`), or `search_query` so the CLI can run aegis-search then aegis-bridge.",
-              ].join("\n"),
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-  }
-
-  if (!metaRaw) {
-    return {
-      content: [
-        {
-          type: "text",
-          text:
-            SERVICE_ID_RE.test(name) && !canAttemptJitMicroBridge(args)
-              ? `Unknown Aegis service: ${name}. For JIT onboarding, include in tool args: user_intent and (doc_url | single_url | search_query).`
-              : `Unknown Aegis service: ${name}`,
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  if (catalogEntryNeedsHubHydration(metaRaw)) {
-    try {
-      await hydrateHubCapabilityManifest(name);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (canAttemptJitMicroBridge(args)) {
-        try {
-          const r = await runJitMicroBridgeAndMergeCatalog({
-            capabilityId: name,
-            args,
-          });
-          console.error(
-            `[JIT] Micro-Bridge hydrated stub "${name}" from ${r.docUrl}`,
-          );
-          callArgs = stripJitKeysFromArgs(args);
-        } catch (e2: unknown) {
-          const msg2 = e2 instanceof Error ? e2.message : String(e2);
-          return {
-            content: [
-              {
-                type: "text",
-                text: [
-                  `Could not load hub manifest for "${name}": ${msg}`,
-                  `On-demand Micro-Bridge failed: ${msg2}`,
-                ].join("\n\n"),
-              },
-            ],
-            isError: true,
-          };
-        }
-      } else {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Could not load hub manifest for "${name}": ${msg}`,
-            },
-          ],
-          isError: true,
-        };
-      }
-    }
-    const refreshed = loadServices();
-    metaRaw = refreshed[name] as Record<string, unknown> | undefined;
-    if (!metaRaw) {
-      return {
-        content: [{ type: "text", text: `Unknown Aegis service: ${name}` }],
-        isError: true,
-      };
-    }
-  }
-
-  const rawStrat = metaRaw.auth_strategy;
-  const strategy: AuthStrategy =
-    rawStrat === "user" || rawStrat === "hybrid" ? rawStrat : "platform";
-  const hubAuthNone = metaRaw.auth_strategy === "none";
-
-  const optionalKeys = catalogOptionalSecretKeys(metaRaw);
-
-  if (
-    strategy === "user" &&
-    optionalKeys.length > 0 &&
-    !hasAllOptionalSecrets(optionalKeys)
-  ) {
-    const missing = optionalKeys.filter((k) => getSecret(k) == null);
-    return {
-      content: [
-        {
-          type: "text",
-          text: [
-            "AUTH_REQUIRED — missing local secret(s)",
-            "",
-            "**Exact key names to add**: " + missing.join(", "),
-            "(These match `optional_secrets` for this tool in your services catalog.)",
-            "",
-            "REQUIRED agent behavior:",
-            "1. Relay the vault instructions below to the user before using substitutes.",
-            "2. Do not substitute `aegis-search` until the user declines.",
-            "---",
-            "",
-            formatUserInstructionsForSecrets(missing),
-          ].join("\n"),
-        },
-      ],
-      isError: true,
-    };
-  }
-
-  const usePreflight =
-    strategy === "user" ||
-    (strategy === "hybrid" &&
-      optionalKeys.length > 0 &&
-      hasAllOptionalSecrets(optionalKeys));
-
-  const useManifestLocal =
-    catalogEntryHasExecutableManifest(metaRaw) &&
-    (strategy === "user" ||
-      strategy === "hybrid" ||
-      hubAuthNone);
-
-  if (useManifestLocal) {
-    const manifestArgs = stripJitKeysFromArgs(callArgs);
-    if (
-      strategy === "user" &&
-      optionalKeys.length > 0 &&
-      !hasAllOptionalSecrets(optionalKeys)
-    ) {
-      const missing = optionalKeys.filter((k) => getSecret(k) == null);
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              "AUTH_REQUIRED — missing local secret(s)",
-              "",
-              "**Exact key names to add**: " + missing.join(", "),
-              "(These match `optional_secrets` for this tool in your services catalog.)",
-              "",
-              "REQUIRED agent behavior:",
-              "1. Relay the vault instructions below to the user before using substitutes.",
-              "2. Do not substitute `aegis-search` until the user declines.",
-              "---",
-              "",
-              formatUserInstructionsForSecrets(missing),
-            ].join("\n"),
-          },
-        ],
-        isError: true,
-      };
-    }
-    if (
-      strategy === "hybrid" &&
-      optionalKeys.length > 0 &&
-      !hasAllOptionalSecrets(optionalKeys)
-    ) {
-      const missing = optionalKeys.filter((k) => getSecret(k) == null);
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              "AUTH_REQUIRED — missing local secret(s) for hybrid manifest execution",
-              "",
-              "**Exact key names to add**: " + missing.join(", "),
-              "---",
-              "",
-              formatUserInstructionsForSecrets(missing),
-            ].join("\n"),
-          },
-        ],
-        isError: true,
-      };
-    }
-
-    try {
-      const data = await executeCapabilityManifestLocal(
-        name,
-        manifestArgs,
-        optionalKeys,
-        metaRaw,
-      );
-      void sendLocalExecutorTelemetry(name);
-      return toolSuccessContent(name, data);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return {
-        content: [{ type: "text", text: `Error: ${msg}` }],
-        isError: true,
-      };
-    }
-  }
-
-  if (usePreflight) {
-    try {
-      const data = await executeLocalPreflight(
-        name,
-        stripJitKeysFromArgs(callArgs) ?? {},
-        optionalKeys,
-      );
-      void sendLocalExecutorTelemetry(name);
-      return toolSuccessContent(name, data);
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const routed = parseRouterExecuteError(msg);
-      if (
-        routed?.httpStatus === 401 &&
-        routed.body.error === "MISSING_PLATFORM_KEY"
-      ) {
-        const upstream =
-          typeof routed.body.message === "string" ? routed.body.message : "";
-        return {
-          content: [
-            {
-              type: "text",
-              text: guidanceForMissingPlatformKey(name, optionalKeys, upstream),
-            },
-          ],
-          isError: true,
-        };
-      }
-      return {
-        content: [{ type: "text", text: `Error: ${msg}` }],
-        isError: true,
-      };
-    }
-  }
-
-  const shouldLegacyInject =
-    strategy === "platform" &&
-    optionalKeys.length > 0 &&
-    hasAllOptionalSecrets(optionalKeys);
-
-  const injectedRecord = shouldLegacyInject
-    ? buildInjectedSecretsMap(optionalKeys)
-    : undefined;
-
   try {
-    const raw = await executeAegisRequest(
-      name,
-      stripJitKeysFromArgs(callArgs) ?? {},
-      undefined,
-      injectedRecord && Object.keys(injectedRecord).length > 0
-        ? injectedRecord
-        : undefined,
-    );
+    const raw = await executeAegisRequest(name, args, undefined, undefined);
     return toolSuccessContent(name, raw);
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
@@ -758,7 +439,7 @@ export async function runCatalogToolCall(
         content: [
           {
             type: "text",
-            text: guidanceForMissingPlatformKey(name, optionalKeys, upstream),
+            text: guidanceForMissingPlatformKey(name, upstream),
           },
         ],
         isError: true,
@@ -769,4 +450,27 @@ export async function runCatalogToolCall(
       isError: true,
     };
   }
+}
+
+export async function runCatalogToolCall(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
+  if (name === "aegis-omni-tool") {
+    return runAegisOmniCatalogInvocation(args);
+  }
+  if (name === "aegis-search" || name === "aegis-parse") {
+    return runDirectProxyTool(name, args);
+  }
+  // Defensive: mcp-server.ts already short-circuits non-Core names, but
+  // keep an explicit guard so this function has no implicit fallthrough.
+  return {
+    content: [
+      {
+        type: "text",
+        text: `Unknown Aegis service: ${name}. The CLI only dispatches aegis-omni-tool, aegis-search, aegis-parse.`,
+      },
+    ],
+    isError: true,
+  };
 }

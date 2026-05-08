@@ -10,14 +10,14 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
-    "dev": "tsc -w",
-    "e2e": "tsx --env-file=.env test/e2e.ts"
+    "dev": "tsc -w"
   },
   "dependencies": {
     "@aegis-m2m/client": "*",
     "@modelcontextprotocol/sdk": "^1.0.3",
     "cors": "^2.8.6",
     "express": "^5.2.1",
+    "nats": "^2.29.3",
     "viem": "^2.21.0",
     "zod": "^4.0.0"
   },

@@ -4,8 +4,7 @@ import { randomUUID } from "crypto";
 import { DASHBOARD_HTML } from "../dashboard.js";
 import {
   AEGIS_BALANCE_ENDPOINT,
-  AEGIS_REGISTER_ENDPOINT,
-  AEGIS_REGISTRY_STATS_ENDPOINT,
+  AEGIS_ROUTER_BASE,
   SERVICE_ID_RE,
 } from "../config.js";
 import { checkAndSweepFunds } from "../crypto/economy.js";
@@ -13,7 +12,6 @@ import { userAccount } from "../crypto/identity.js";
 import { signAegisRequestHeaders } from "../crypto/signer.js";
 import {
   createSessionMcpServer,
-  ensureHubSyncBeforeMcpSse,
   sseSessions,
   SSEServerTransport,
 } from "./mcp-server.js";
@@ -23,10 +21,16 @@ import {
   parseRouterExecuteError,
 } from "../executor/router-client.js";
 import {
-  ensureBuiltinServices,
-  loadServices,
-  saveServices,
-} from "../services/catalog.js";
+  getRelayListenerStatus,
+  reloadRelayListener,
+  startRelayListener,
+} from "../relay/listener.js";
+import {
+  loadRelayConfig,
+  removeRelayNodeConfig,
+  upsertRelayNodeConfig,
+} from "../relay/config.js";
+import { getSecret } from "../crypto/vault.js";
 
 export function createExpressApp(): express.Express {
   const app = express();
@@ -57,124 +61,10 @@ export function createExpressApp(): express.Express {
     }
   });
 
-  app.get("/api/catalog", (_req, res) => {
-    const services = loadServices();
-    res.json({
-      services: Object.entries(services).map(([id, meta]) => ({
-        id,
-        ...(meta as Record<string, unknown>),
-      })),
-    });
-  });
-
-  app.post("/api/provider/register", async (req, res) => {
-    const body = req.body as Record<string, unknown>;
-    const { id, endpoint_url, secret } = body;
-    if (typeof id !== "string" || !SERVICE_ID_RE.test(id))
-      return res.status(400).json({ error: "INVALID_ID" });
-
-    let method: "POST" | "PUT" = "POST";
-    try {
-      const probe = await fetch(AEGIS_REGISTRY_STATS_ENDPOINT(id));
-      if (probe.ok) {
-        const stats = (await probe.json()) as {
-          service?: { provider_wallet?: string };
-        };
-        if (
-          stats?.service?.provider_wallet?.toLowerCase() !==
-          userAccount.address.toLowerCase()
-        ) {
-          return res.status(403).json({
-            error: "NOT_OWNER",
-            message: "This ID belongs to another wallet.",
-          });
-        }
-        method = "PUT";
-      }
-    } catch {
-      /* use POST */
-    }
-
-    if (method === "POST") {
-      try {
-        let origin: string;
-        try {
-          origin = new URL(endpoint_url as string).origin;
-        } catch {
-          return res.status(400).json({ error: "INVALID_ENDPOINT_URL" });
-        }
-        const healthUrl = `${origin}/health`;
-        let test = await fetch(healthUrl, {
-          method: "GET",
-          signal: AbortSignal.timeout(15_000),
-        });
-        // Prefer `/health` (Hydra, parse worker). Fall back to origin GET for
-        // simple public fixtures (e.g. httpbin) that expose no health route.
-        if (test.status === 404) {
-          test = await fetch(origin, {
-            method: "GET",
-            signal: AbortSignal.timeout(15_000),
-          });
-        }
-        if (!test.ok) {
-          return res.status(400).json({
-            error: "LOCAL_UNREACHABLE",
-            message: `Liveness check returned ${test.status}`,
-          });
-        }
-      } catch (e: unknown) {
-        const message = e instanceof Error ? e.message : String(e);
-        return res
-          .status(400)
-          .json({ error: "LOCAL_UNREACHABLE", message });
-      }
-    }
-
-    try {
-      const payload =
-        method === "POST"
-          ? {
-              ...body,
-              provider_wallet: userAccount.address,
-              provider_secret: secret,
-            }
-          : { ...body, new_secret: secret };
-      const sync = await fetch(AEGIS_REGISTER_ENDPOINT, {
-        method,
-        headers: {
-          "Content-Type": "application/json",
-          ...(await signAegisRequestHeaders(userAccount)),
-        },
-        body: JSON.stringify(payload),
-      });
-      const syncBodyText = await sync.text();
-      let data: unknown;
-      try {
-        data = syncBodyText ? JSON.parse(syncBodyText) : {};
-      } catch {
-        data = { error: "INVALID_ROUTER_JSON", raw: syncBodyText };
-      }
-      if (sync.ok) {
-        const services = loadServices();
-        services[id] = {
-          ...body,
-          registered_at: new Date().toISOString(),
-        };
-        saveServices(services);
-      }
-      res.status(sync.status).json(data);
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(502).json({ error: "ROUTER_ERROR", message });
-    }
-  });
-
   app.get("/mcp/sse", async (_req, res) => {
     let transport: SSEServerTransport | undefined;
     let sessionServer: ReturnType<typeof createSessionMcpServer> | undefined;
     try {
-      await ensureHubSyncBeforeMcpSse();
-
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache");
       res.setHeader("Connection", "keep-alive");
@@ -302,6 +192,89 @@ export function createExpressApp(): express.Express {
     }
   });
 
+  // ─── Relay (Branch D) ──────────────────────────────────────────────
+  // Lightweight HTTP surface mirroring the `aegis-cli relay ...` CLI.
+  // Lets the dashboard / MCP host inspect or mutate the relay.json
+  // opt-ins without spawning a subprocess.
+
+  app.get("/api/relay/status", (_req, res) => {
+    const cfg = loadRelayConfig();
+    res.json({
+      ...getRelayListenerStatus(),
+      configured: cfg.nodes,
+    });
+  });
+
+  app.post("/api/relay/register", async (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const slug = body.provider_slug;
+    const vault = body.vault_key_name;
+    const fee = body.fee_per_call;
+    const rate = body.rate_limit_max;
+
+    if (
+      typeof slug !== "string" ||
+      !SERVICE_ID_RE.test(slug) ||
+      typeof vault !== "string" ||
+      vault.length === 0 ||
+      typeof fee !== "number" ||
+      !Number.isInteger(fee) ||
+      fee < 0 ||
+      typeof rate !== "number" ||
+      !Number.isInteger(rate) ||
+      rate <= 0
+    ) {
+      return res
+        .status(400)
+        .json({ error: "INVALID_RELAY_REGISTRATION" });
+    }
+
+    if (!getSecret(vault)) {
+      return res.status(400).json({
+        error: "VAULT_MISS",
+        message: `Vault has no value for key "${vault}". Add it to vault.json before registering as a relay.`,
+      });
+    }
+
+    const next = upsertRelayNodeConfig({
+      provider_slug: slug.toLowerCase(),
+      vault_key_name: vault,
+      fee_per_call: fee,
+      rate_limit_max: rate,
+    });
+
+    try {
+      await reloadRelayListener();
+    } catch (e) {
+      console.warn("[Relay] reload after register failed:", e);
+    }
+    res.json({ ok: true, config: next });
+  });
+
+  app.delete("/api/relay/:slug", async (req, res) => {
+    const slug = req.params.slug;
+    if (typeof slug !== "string" || !SERVICE_ID_RE.test(slug)) {
+      return res.status(400).json({ error: "INVALID_PROVIDER_SLUG" });
+    }
+    const next = removeRelayNodeConfig(slug);
+    try {
+      await reloadRelayListener();
+    } catch (e) {
+      console.warn("[Relay] reload after deregister failed:", e);
+    }
+    // Best-effort: also tell the Router so the row flips to retired.
+    try {
+      const headers = await signAegisRequestHeaders(userAccount);
+      await fetch(
+        `${AEGIS_ROUTER_BASE}/v1/relay/nodes/${encodeURIComponent(slug.toLowerCase())}`,
+        { method: "DELETE", headers },
+      );
+    } catch (e) {
+      console.warn("[Relay] router DELETE failed:", e);
+    }
+    res.json({ ok: true, config: next });
+  });
+
   app.post("/mcp/messages", async (req, res) => {
     const sessionId =
       typeof req.query.sessionId === "string" ? req.query.sessionId : "";
@@ -324,12 +297,14 @@ export function createExpressApp(): express.Express {
 const SWEEP_INTERVAL_MS = 5_000;
 
 export async function startDaemonServer(port: number): Promise<void> {
-  ensureBuiltinServices();
   const app = createExpressApp();
   await new Promise<void>((resolve) => {
     app.listen(port, () => {
       console.error(
         `🚀 Aegis Hub Engine Live on port ${port} (MCP SSE at /mcp/sse)`,
+      );
+      console.error(
+        `💳 Transit wallet (fund on Base, USDC or ETH): ${userAccount.address}`,
       );
       resolve();
     });
@@ -338,4 +313,12 @@ export async function startDaemonServer(port: number): Promise<void> {
   setInterval(() => {
     void checkAndSweepFunds().catch(() => {});
   }, SWEEP_INTERVAL_MS);
+
+  // Best-effort relay listener boot. No-op when relay.json is empty
+  // or NATS is unreachable; the listener internally schedules its own
+  // reconnect so a temporarily-unavailable Router doesn't block daemon
+  // startup.
+  void startRelayListener().catch((err) => {
+    console.warn("[Relay] startRelayListener crashed:", err);
+  });
 }
