@@ -11,7 +11,7 @@
     "build": "tsc",
     "start": "node dist/main.js",
     "dev": "tsc -w",
-    "e2e": "tsx --env-file=.env test/e2e.ts",
+    "e2e": "tsx --env-file=.env test/e2e.ts"
   },
   "dependencies": {
     "@aegis-m2m/client": "*",

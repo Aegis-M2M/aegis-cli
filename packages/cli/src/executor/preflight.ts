@@ -33,7 +33,8 @@ function cleanupUnusedPlaceholdersInUrl(url: string): string {
       if (UNRESOLVED_PLACEHOLDER_VALUE.test(val.trim())) drop.push(key);
     });
     for (const k of drop) u.searchParams.delete(k);
-    return u.toString();
+    const result = u.toString();
+    return result.replace(/%7B/gi, "{").replace(/%7D/gi, "}");
   } catch {
     return url
       .replace(/[&?][^&?#]+=\{\{[^}]+\}\}/g, "")
@@ -70,7 +71,7 @@ function substituteUserPlaceholders(
   args: Record<string, unknown>,
   reserved: Set<string>,
 ): string {
-  let out = s;
+  let out = s.replace(/%7B/gi, "{").replace(/%7D/gi, "}");
   for (const [k, val] of Object.entries(args)) {
     if (reserved.has(k) || val === undefined || val === null) continue;
     const strVal =
@@ -292,10 +293,14 @@ export function injectSecretsIntoCompiled(
   body?: unknown;
 } {
   const secrets: Record<string, string> = {};
-  for (const k of secretKeys) {
-    const v = getSecret(k);
-    if (!v) throw new Error(`Missing vault key: ${k}`);
-    secrets[k] = v;
+  for (const secretName of secretKeys) {
+    const keyVal = process.env[secretName];
+    console.error(
+      `[Hub] Attempting to inject ${secretName}... (Found: ${!!keyVal})`,
+    );
+    const v = getSecret(secretName);
+    if (!v) throw new Error(`Missing vault key: ${secretName}`);
+    secrets[secretName] = v;
   }
   return {
     url: interpolateVaultPlaceholders(compiled.url, secrets) as string,

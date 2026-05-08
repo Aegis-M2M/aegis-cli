@@ -97,16 +97,20 @@ export function extractToolResult(serviceId: string, data: unknown): string {
       );
     }
     const upstream = parsed.upstream_data;
-    if (branch === "platform" && upstream !== undefined) {
+    if (upstream !== undefined) {
       lines.push("");
       lines.push(
         typeof upstream === "string"
           ? upstream
           : JSON.stringify(upstream, null, 2),
       );
+      if (branch === "local") {
+        lines.push("\n[Context: This data was fetched locally via your Aegis Hub]");
+      }
     } else if (branch === "local") {
-      lines.push("");
-      lines.push("(local branch: CLI executed delegate_request directly)");
+      lines.push(
+        "\n(local branch: CLI executed delegate_request but no data was returned)",
+      );
     } else if (branch === "blocked") {
       lines.push("");
       lines.push(
@@ -118,7 +122,7 @@ export function extractToolResult(serviceId: string, data: unknown): string {
     return lines.join("\n");
   }
   try {
-    return JSON.stringify(data);
+    return JSON.stringify(data, null, 2);
   } catch {
     return String(data);
   }
@@ -273,6 +277,11 @@ async function runAegisOmniCatalogInvocation(
             (x: unknown): x is string => typeof x === "string",
           ) as string[])
         : [];
+      console.error(
+        "[Hub] 🏃 Local Delegation received for provider:",
+        payload.provider_id,
+      );
+      console.error("[Hub] 🔑 Secrets required by Proxy:", required.join(", "));
       const dr = payload.delegate_request as
         | {
             method?: unknown;
@@ -299,6 +308,13 @@ async function runAegisOmniCatalogInvocation(
           isError: true,
         };
       }
+
+      console.error(
+        `[Hub-Debug] Available Local Env Keys: ${Object.keys(process.env)
+          .filter((k) => k.includes("KEY"))
+          .join(", ")}`,
+      );
+      console.error(`[Hub-Debug] Pre-Injection URL: ${dr.url}`);
 
       const missing = required.filter((s) => resolveVaultSecret(s) == null);
       if (missing.length > 0) {
@@ -347,21 +363,43 @@ async function runAegisOmniCatalogInvocation(
             ? injected.body
             : JSON.stringify(injected.body);
       }
-      const r = await fetch(injected.url, init);
-      const text = await r.text();
+      const finalUrl = injected.url;
+      const finalHeaders = injected.headers as Record<string, string>;
+      console.error("[Hub] 📡 Executing final fetch to:", finalUrl);
+      console.error("[Hub] 🛡️ Headers:", JSON.stringify(finalHeaders));
+      let fetchResponse: Response;
+      try {
+        fetchResponse = await fetch(injected.url, init);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[Hub] Fetch failed (network):", e);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Local omni fetch network error: ${msg}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+      console.error(
+        `[Hub] ✅ Response Received: ${fetchResponse.status} ${fetchResponse.statusText}`,
+      );
+      const text = await fetchResponse.text();
       let data: unknown = text;
       try {
         data = text ? JSON.parse(text) : null;
       } catch {
         /* keep raw */
       }
-      if (!r.ok) {
+      if (!fetchResponse.ok) {
         const snippet = typeof data === "string" ? data : JSON.stringify(data);
         return {
           content: [
             {
               type: "text",
-              text: `Local omni fetch failed (${r.status}): ${snippet.slice(0, 1200)}`,
+              text: `Local omni fetch failed (${fetchResponse.status}): ${snippet.slice(0, 1200)}`,
             },
           ],
           isError: true,
@@ -438,13 +476,13 @@ export async function runCatalogToolCall(
   let callArgs = args;
 
   if (!metaRaw && SERVICE_ID_RE.test(name)) {
-    console.log(`[JIT] Unknown ID "${name}". Attempting Hub discovery...`);
+    console.error(`[JIT] Unknown ID "${name}". Attempting Hub discovery...`);
     try {
       await hydrateHubCapabilityManifest(name);
       const refreshed = loadServices();
       metaRaw = refreshed[name] as Record<string, unknown> | undefined;
       if (metaRaw) {
-        console.log(
+        console.error(
           `[JIT] Successfully discovered and hydrated "${name}" from Hub.`,
         );
       }
@@ -458,7 +496,7 @@ export async function runCatalogToolCall(
           capabilityId: name,
           args,
         });
-        console.log(
+        console.error(
           `[JIT] Micro-Bridge materialized "${name}" from ${r.docUrl}`,
         );
         metaRaw = loadServices()[name] as Record<string, unknown> | undefined;
@@ -512,7 +550,7 @@ export async function runCatalogToolCall(
             capabilityId: name,
             args,
           });
-          console.log(
+          console.error(
             `[JIT] Micro-Bridge hydrated stub "${name}" from ${r.docUrl}`,
           );
           callArgs = stripJitKeysFromArgs(args);

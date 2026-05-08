@@ -15,14 +15,14 @@ let hubSyncForSseSessionDone = false;
 
 /** Shallow hub sync: refresh local `services.json` stubs from the router. */
 export async function syncHubOnMcpBoot(): Promise<void> {
-  console.log("[MCP] Initializing Aegis Hub...");
+  console.error("[MCP] Initializing Aegis Hub...");
   try {
     const stats = await syncWithHub();
-    console.log(
+    console.error(
       `[MCP] Hub Sync Complete: Merged ${stats.merged} service stub(s) (${stats.skipped} skipped).`,
     );
   } catch (e) {
-    console.warn("[MCP] Initial Hub sync failed (offline mode):", e);
+    console.error("[MCP] Initial Hub sync failed (offline mode):", e);
   }
 }
 
