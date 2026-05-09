@@ -118,6 +118,24 @@ function getLevenshteinDistance(a: string, b: string): number {
 }
 
 /**
+ * Strip repeated credential-style suffixes (with optional leading underscore) until stable.
+ * Used to compare vault key names and catalog secret names on a common base.
+ */
+export function canonicalize(name: string): string {
+  let current = name.toUpperCase();
+  let previous: string;
+
+  const noisePattern = /_?(API_KEY|API|KEY|SECRET|TOKEN)$/i;
+
+  do {
+    previous = current;
+    current = current.replace(noisePattern, "");
+  } while (current !== previous && current.length > 0);
+
+  return current || previous;
+}
+
+/**
  * Resolve a manifest secret name (e.g. `POLYGON_API_KEY`) to a value
  * stored in the local vault only (no process.env).
  * Strategy: exact match → short form → standard suffixes → Levenshtein fuzzy match over vault keys.
@@ -126,9 +144,7 @@ export function resolveVaultSecret(secretName: string): string | null {
   const direct = getSecret(secretName);
   if (direct) return direct;
 
-  const normalize = (s: string) =>
-    s.toUpperCase().replace(/_(API_KEY|KEY|SECRET|TOKEN)$/, "");
-  const targetShort = normalize(secretName);
+  const targetShort = canonicalize(secretName);
 
   const shortMatch = getSecret(targetShort);
   if (shortMatch) return shortMatch;
@@ -147,7 +163,7 @@ export function resolveVaultSecret(secretName: string): string | null {
   const SIMILARITY_THRESHOLD = 0.8;
 
   for (const candidate of candidateKeys) {
-    const candidateShort = normalize(candidate);
+    const candidateShort = canonicalize(candidate);
     const distance = getLevenshteinDistance(targetShort, candidateShort);
     const maxLen = Math.max(targetShort.length, candidateShort.length);
     const similarity = maxLen === 0 ? 1 : 1 - distance / maxLen;
@@ -183,8 +199,8 @@ export function listApiKeyProviderHintsFromVault(): string[] {
     for (const [name, val] of Object.entries(vault)) {
       if (!/_API_KEY$/i.test(name)) continue;
       if (typeof val !== "string" || val.trim().length === 0) continue;
-      const hint = name.replace(/_API_KEY$/i, "").trim();
-      if (hint.length > 0) hints.add(hint.toUpperCase());
+      const hint = canonicalize(name);
+      if (hint.length > 0) hints.add(hint);
     }
     return [...hints].sort();
   } catch (e) {
