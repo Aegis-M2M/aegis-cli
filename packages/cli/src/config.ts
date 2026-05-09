@@ -8,8 +8,7 @@ export const CONFIG_DIR = process.env.AEGIS_HOME
 export const IDENTITY_PATH = path.join(CONFIG_DIR, "identity.json");
 export const VAULT_PATH = path.join(CONFIG_DIR, "vault.json");
 
-export const BASE_USDC =
-  "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
+export const BASE_USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913" as const;
 export const AEGIS_ENTERPRISE_WALLET =
   "0xDb11E8ba517ecB97C30a77b34C6492d2e15FD510";
 

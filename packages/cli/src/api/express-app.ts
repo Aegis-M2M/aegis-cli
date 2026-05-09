@@ -455,7 +455,7 @@ export function createExpressApp(): express.Express {
 }
 
 /** Idle USDC on the Transit Wallet becomes router credits via /v1/fund (not only on execute). */
-const SWEEP_INTERVAL_MS = 5_000;
+const SWEEP_INTERVAL_MS = 10_000;
 
 export async function startDaemonServer(port: number): Promise<void> {
   const app = createExpressApp();

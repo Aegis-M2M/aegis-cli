@@ -115,6 +115,22 @@ function rewriteDockerNatsHostForLocalDaemon(url: string): string {
   return trimmed;
 }
 
+/**
+ * `/v1/relay/connect` echoes the Router process `NATS_URL` (often a private
+ * hostname like `nats.railway.internal`). That works for the Router container
+ * only — daemons on your laptop cannot resolve it.
+ *
+ * When `NATS_URL` is set in the environment, use it as the broker address
+ * instead (e.g. Railway's public TCP hostname).
+ */
+function daemonNatsServers(cr: ConnectResponse): string {
+  const fromEnv = process.env.NATS_URL?.trim();
+  if (fromEnv) {
+    return rewriteDockerNatsHostForLocalDaemon(fromEnv);
+  }
+  return cr.nats_url;
+}
+
 async function fetchConnectToken(): Promise<ConnectResponse> {
   const headers = await signAegisRequestHeaders(userAccount);
   const r = await fetch(`${AEGIS_ROUTER_BASE}/v1/relay/connect`, {
@@ -526,10 +542,17 @@ export async function startRelayListener(): Promise<boolean> {
   state.token = cr.token;
   state.expiresAtMs = cr.expires_at_ms;
 
+  const servers = daemonNatsServers(cr);
+  if (process.env.NATS_URL?.trim()) {
+    console.error(
+      `[Relay] NATS servers=${servers} (from NATS_URL env; router advertised ${cr.nats_url})`,
+    );
+  }
+
   let nc: NatsConnection;
   try {
     nc = await connect({
-      servers: cr.nats_url,
+      servers,
       name: `aegis-daemon-${userAccount.address}`,
       reconnect: true,
       maxReconnectAttempts: -1,
@@ -537,14 +560,14 @@ export async function startRelayListener(): Promise<boolean> {
     });
   } catch (err) {
     console.warn(
-      `[Relay] NATS connect failed at ${cr.nats_url}; relay listener disabled:`,
+      `[Relay] NATS connect failed at ${servers}; relay listener disabled:`,
       err,
     );
     scheduleReconnect();
     return false;
   }
   state.nc = nc;
-  console.error(`[Relay] Connected to NATS at ${cr.nats_url}`);
+  console.error(`[Relay] Connected to NATS at ${servers}`);
 
   // Register every configured node with the Router (idempotent upsert).
   for (const node of cfg.nodes) {
