@@ -61,12 +61,14 @@ export function createExpressApp(): express.Express {
   app.use(express.json());
 
   app.get("/", (_req, res) => {
-    res.type("html").send(
-      DASHBOARD_HTML.replaceAll(
-        DASHBOARD_TRANSIT_WALLET_MARKER,
-        userAccount.address,
-      ),
-    );
+    res
+      .type("html")
+      .send(
+        DASHBOARD_HTML.replaceAll(
+          DASHBOARD_TRANSIT_WALLET_MARKER,
+          userAccount.address,
+        ),
+      );
   });
 
   // ─── Vault (secrets never listed in GET — dashboard edits via PUT/DELETE)
@@ -122,7 +124,11 @@ export function createExpressApp(): express.Express {
       typeof req.params.key === "string"
         ? decodeURIComponent(req.params.key)
         : "";
-    if (typeof rawKey !== "string" || rawKey.length === 0 || rawKey.length > 128) {
+    if (
+      typeof rawKey !== "string" ||
+      rawKey.length === 0 ||
+      rawKey.length > 128
+    ) {
       return res.status(400).json({ error: "INVALID_KEY_NAME" });
     }
     try {
@@ -191,9 +197,7 @@ export function createExpressApp(): express.Express {
       if (usd_value === null && credits !== null) {
         usd_value = Number((credits / CREDITS_PER_USD_API).toFixed(4));
       }
-      const scrapes_remaining = finiteNumberFromUnknown(
-        body.scrapes_remaining,
-      );
+      const scrapes_remaining = finiteNumberFromUnknown(body.scrapes_remaining);
 
       return res.json({
         wallet,
@@ -279,11 +283,7 @@ export function createExpressApp(): express.Express {
       });
     }
     try {
-      const data = await executeAegisRequest(
-        service,
-        requestBody,
-        maxCredits,
-      );
+      const data = await executeAegisRequest(service, requestBody, maxCredits);
       res.json(data);
     } catch (err) {
       const e = err instanceof Error ? err : new Error(String(err));
@@ -305,7 +305,9 @@ export function createExpressApp(): express.Express {
       const legacyModel = "claude-3-5-sonnet-20241022";
       let systemPrompt = req.body.system;
       if (Array.isArray(systemPrompt)) {
-        systemPrompt = systemPrompt.map((b: { text?: string }) => b.text || "").join("\n");
+        systemPrompt = systemPrompt
+          .map((b: { text?: string }) => b.text || "")
+          .join("\n");
       }
 
       const cleanPayload: Record<string, unknown> = {
@@ -385,9 +387,7 @@ export function createExpressApp(): express.Express {
       !Number.isInteger(rate) ||
       rate <= 0
     ) {
-      return res
-        .status(400)
-        .json({ error: "INVALID_RELAY_REGISTRATION" });
+      return res.status(400).json({ error: "INVALID_RELAY_REGISTRATION" });
     }
 
     if (!getSecret(vault)) {

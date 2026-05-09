@@ -8,7 +8,7 @@ import {
 import { AEGIS_ROUTER_BASE } from "../config.js";
 import { userAccount } from "../crypto/identity.js";
 import { signAegisRequestHeaders } from "../crypto/signer.js";
-import { resolveVaultSecret } from "../crypto/vault.js";
+import { getSecret, resolveVaultSecret } from "../crypto/vault.js";
 import {
   cleanupCompiledRequestPlaceholders,
   injectSecretsIntoCompiled,
@@ -32,6 +32,15 @@ import {
 // Heartbeats are published every 15s on `aegis.relay.v1.health.<wallet>`
 // with the Router-issued connect token so the Router can verify the
 // publisher actually owns this wallet.
+//
+// Request subscriptions use a NATS queue group so only one member receives
+// each Router `request()` message for that subject. Without it, duplicate
+// subscribers (two daemons, same wallet + slug) would both respond and the
+// server might accept the first reply — often an immediate VAULT_MISS from a
+// stray process while another logs successful injection.
+
+/** NATS queue group for relay req subjects — balances among subscribers; one delivery per message. */
+const RELAY_NATS_QUEUE_GROUP = "aegis-relay-v1";
 
 const HEARTBEAT_INTERVAL_MS = 15_000;
 const TOKEN_REFRESH_LEAD_MS = 5 * 60_000;
@@ -80,6 +89,32 @@ function healthSubject(wallet: string): string {
   return `aegis.relay.v1.health.${wallet}`;
 }
 
+/**
+ * Router often returns Docker-internal NATS (`nats://nats:4222`). When the
+ * daemon runs on the host (not on the compose network), that hostname does not
+ * resolve — rewrite to localhost so a published port works.
+ *
+ * When this process runs *inside* Compose next to the `nats` service, set
+ * `AEGIS_RELAY_PRESERVE_ROUTER_NATS_HOST=1` so we keep the Router URL as-is.
+ */
+function rewriteDockerNatsHostForLocalDaemon(url: string): string {
+  if (process.env.AEGIS_RELAY_PRESERVE_ROUTER_NATS_HOST === "1") {
+    return url.trim();
+  }
+  const trimmed = url.trim();
+  if (!trimmed) return trimmed;
+  try {
+    const u = new URL(trimmed);
+    if (u.hostname === "nats") {
+      u.hostname = "localhost";
+      return u.href.endsWith("/") ? u.href.slice(0, -1) : u.href;
+    }
+  } catch {
+    if (trimmed === "nats://nats:4222") return "nats://localhost:4222";
+  }
+  return trimmed;
+}
+
 async function fetchConnectToken(): Promise<ConnectResponse> {
   const headers = await signAegisRequestHeaders(userAccount);
   const r = await fetch(`${AEGIS_ROUTER_BASE}/v1/relay/connect`, {
@@ -94,7 +129,11 @@ async function fetchConnectToken(): Promise<ConnectResponse> {
     const text = await r.text();
     throw new Error(`Router /v1/relay/connect ${r.status}: ${text.slice(0, 400)}`);
   }
-  return (await r.json()) as ConnectResponse;
+  const raw = (await r.json()) as ConnectResponse;
+  return {
+    ...raw,
+    nats_url: rewriteDockerNatsHostForLocalDaemon(raw.nats_url),
+  };
 }
 
 async function publishRelayNodeToRouter(
@@ -111,6 +150,7 @@ async function publishRelayNodeToRouter(
       provider_slug: node.provider_slug,
       fee_per_call: node.fee_per_call,
       rate_limit_max: node.rate_limit_max,
+      vault_key_name: node.vault_key_name,
     }),
   });
   if (!r.ok) {
@@ -135,6 +175,30 @@ interface ExecuteEnvelope {
   request_id?: string;
   delegate_request?: DelegateRequest;
   required_secrets?: string[];
+  /** Exact vault.json property name advertised with this relay row (Router → daemon). */
+  vault_key_name?: string;
+}
+
+function relayBoundVaultKey(
+  envelope: ExecuteEnvelope,
+  node: RelayNodeConfig,
+): string | null {
+  const fromRouter =
+    typeof envelope.vault_key_name === "string"
+      ? envelope.vault_key_name.trim()
+      : "";
+  if (fromRouter.length > 0) return fromRouter;
+  const local = node.vault_key_name.trim();
+  return local.length > 0 ? local : null;
+}
+
+function secretResolvableForRelay(
+  manifestName: string,
+  boundVaultKey: string | null,
+): boolean {
+  if (resolveVaultSecret(manifestName) !== null) return true;
+  if (boundVaultKey && getSecret(boundVaultKey)) return true;
+  return false;
 }
 
 async function handleAck(msg: Msg, _node: RelayNodeConfig): Promise<void> {
@@ -180,10 +244,12 @@ async function handleExecute(
     return;
   }
 
-  // Sanity: the caller's required_secrets must include something we
-  // recognise locally. Resolution will throw if any is missing.
+  const boundKey = relayBoundVaultKey(envelope, node);
+
+  // Sanity: each manifest secret must resolve in the vault, or we fall back
+  // to the bound vault entry name stored on the relay row / relay.json.
   for (const name of required) {
-    if (resolveVaultSecret(name) === null) {
+    if (!secretResolvableForRelay(name, boundKey)) {
       msg.respond(
         jc.encode({
           ok: false,
@@ -194,11 +260,14 @@ async function handleExecute(
       return;
     }
   }
-  // Always include the user's declared vault key for this slug — it's
-  // valid for the proxy to pass an empty `required_secrets` if the
-  // template encodes the secret name in a placeholder we already know
-  // about.
-  const merged = Array.from(new Set([...required, node.vault_key_name]));
+
+  const merged = Array.from(
+    new Set(
+      [...required, ...(boundKey ? [boundKey] : [])].filter(
+        (x): x is string => typeof x === "string" && x.length > 0,
+      ),
+    ),
+  );
 
   let injected;
   try {
@@ -210,6 +279,7 @@ async function handleExecute(
         body: dr.body,
       },
       merged,
+      boundKey ? { fallbackVaultKey: boundKey } : undefined,
     );
   } catch (err) {
     msg.respond(
@@ -322,9 +392,11 @@ async function subscribeNode(
 ): Promise<void> {
   const subj = relaySubject(node.provider_slug, userAccount.address);
   if (state.subs.has(subj)) return;
-  const sub = nc.subscribe(subj);
+  const sub = nc.subscribe(subj, { queue: RELAY_NATS_QUEUE_GROUP });
   state.subs.set(subj, sub);
-  console.error(`[Relay] Subscribed: ${subj}`);
+  console.error(
+    `[Relay] Subscribed (queue=${RELAY_NATS_QUEUE_GROUP}): ${subj}`,
+  );
   (async () => {
     for await (const m of sub) {
       try {

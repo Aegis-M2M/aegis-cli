@@ -20,7 +20,15 @@
 // removed: third-party tools no longer self-register, so the daemon
 // has no manifests to interpret.
 
-import { resolveVaultSecret } from "../crypto/vault.js";
+import { getSecret, resolveVaultSecret } from "../crypto/vault.js";
+
+export interface InjectSecretsOptions {
+  /**
+   * Relay execute path: when a manifest secret name does not resolve in the
+   * vault, use the value stored under this exact vault property instead.
+   */
+  fallbackVaultKey?: string;
+}
 
 const UNRESOLVED_PLACEHOLDER_VALUE = /^\{\{[a-zA-Z0-9_]+\}\}$/;
 
@@ -94,15 +102,20 @@ export function injectSecretsIntoCompiled(
     body?: unknown;
   },
   secretKeys: string[],
+  options?: InjectSecretsOptions,
 ): {
   url: string;
   method: string;
   headers: Record<string, string>;
   body?: unknown;
 } {
+  const fallback = options?.fallbackVaultKey?.trim();
   const secrets: Record<string, string> = {};
   for (const secretName of secretKeys) {
-    const v = resolveVaultSecret(secretName);
+    let v = resolveVaultSecret(secretName);
+    if (!v && fallback) {
+      v = getSecret(fallback);
+    }
     console.error(
       `[Hub] Attempting to inject ${secretName}... (Found: ${!!v})`,
     );

@@ -11,8 +11,9 @@ import { CONFIG_DIR } from "../config.js";
 // charge `fee_per_call` credits per relayed call and won't process
 // more than `rate_limit_max` calls per rolling 24-hour window."
 //
-// Secrets never leave this machine — only the slug + fee + limit are
-// uploaded to the Router during /v1/relay/nodes.
+// Secrets never leave this machine. The slug, fee, limit, and the vault
+// property name (`vault_key_name`) are uploaded to the Router during
+// /v1/relay/nodes — never the secret value.
 
 export const RELAY_CONFIG_PATH = path.join(CONFIG_DIR, "relay.json");
 
