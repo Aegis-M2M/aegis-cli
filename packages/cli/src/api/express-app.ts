@@ -1,7 +1,10 @@
 import cors from "cors";
 import express from "express";
 import { randomUUID } from "crypto";
-import { DASHBOARD_HTML } from "../dashboard.js";
+import {
+  DASHBOARD_HTML,
+  DASHBOARD_TRANSIT_WALLET_MARKER,
+} from "../dashboard.js";
 import {
   AEGIS_BALANCE_ENDPOINT,
   AEGIS_ROUTER_BASE,
@@ -30,33 +33,193 @@ import {
   removeRelayNodeConfig,
   upsertRelayNodeConfig,
 } from "../relay/config.js";
-import { getSecret } from "../crypto/vault.js";
+import {
+  deleteVaultKey,
+  getSecret,
+  listVaultSummary,
+  setSecret,
+  VAULT_KEY_NAME_RE,
+} from "../crypto/vault.js";
+
+const ROUTER_FETCH_TIMEOUT_MS = 12_000;
+
+function finiteNumberFromUnknown(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string" && v.trim() !== "") {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** Same scale as router `CREDITS_PER_USDC` / dashboard `CREDITS_PER_USD`. */
+const CREDITS_PER_USD_API = 10_000;
 
 export function createExpressApp(): express.Express {
   const app = express();
   app.use(cors({ origin: true, credentials: true }));
   app.use(express.json());
 
-  app.get("/", (_req, res) => res.send(DASHBOARD_HTML));
+  app.get("/", (_req, res) => {
+    res.type("html").send(
+      DASHBOARD_HTML.replaceAll(
+        DASHBOARD_TRANSIT_WALLET_MARKER,
+        userAccount.address,
+      ),
+    );
+  });
 
-  app.get("/api/status", async (_req, res) => {
+  // ─── Vault (secrets never listed in GET — dashboard edits via PUT/DELETE)
+  app.get("/api/vault", (_req, res) => {
     try {
-      const r = await fetch(AEGIS_BALANCE_ENDPOINT(userAccount.address));
-      const b = (await r.json()) as {
-        credits?: unknown;
-        usd_value?: unknown;
-      };
-      res.json({
-        wallet: userAccount.address,
-        credits: b.credits,
-        usd_value: b.usd_value,
-        router_online: true,
+      res.json({ entries: listVaultSummary() });
+    } catch (e) {
+      console.error("[Vault API] GET /api/vault:", e);
+      res.status(500).json({ error: "VAULT_READ_FAILED" });
+    }
+  });
+
+  app.put("/api/vault/:key", (req, res) => {
+    const rawKey =
+      typeof req.params.key === "string"
+        ? decodeURIComponent(req.params.key)
+        : "";
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const value = body.value;
+
+    if (!VAULT_KEY_NAME_RE.test(rawKey)) {
+      return res.status(400).json({
+        error: "INVALID_KEY_NAME",
+        message:
+          "Key must match /^[A-Za-z_][A-Za-z0-9_]{0,127}$/ (e.g. NEWSAPI_API_KEY).",
       });
-    } catch {
-      res.json({
-        wallet: userAccount.address,
-        credits: 0,
+    }
+    if (typeof value !== "string") {
+      return res.status(400).json({
+        error: "INVALID_BODY",
+        message: 'JSON body must include string "value".',
+      });
+    }
+    const trimmed = value.trim();
+    if (!trimmed.length) {
+      return res.status(400).json({
+        error: "EMPTY_VALUE",
+        message: "Secret value cannot be empty. Use DELETE to remove a key.",
+      });
+    }
+
+    try {
+      setSecret(rawKey, trimmed);
+      res.json({ ok: true, key: rawKey, has_value: true });
+    } catch (e) {
+      console.error("[Vault API] PUT /api/vault/:key:", e);
+      res.status(500).json({ error: "VAULT_WRITE_FAILED" });
+    }
+  });
+
+  app.delete("/api/vault/:key", (req, res) => {
+    const rawKey =
+      typeof req.params.key === "string"
+        ? decodeURIComponent(req.params.key)
+        : "";
+    if (typeof rawKey !== "string" || rawKey.length === 0 || rawKey.length > 128) {
+      return res.status(400).json({ error: "INVALID_KEY_NAME" });
+    }
+    try {
+      const existed = deleteVaultKey(rawKey);
+      res.json({ ok: true, removed: existed });
+    } catch (e) {
+      console.error("[Vault API] DELETE /api/vault/:key:", e);
+      res.status(500).json({ error: "VAULT_WRITE_FAILED" });
+    }
+  });
+
+  /**
+   * Wallet address + where balance is fetched — never depends on Router
+   * reachability so the dashboard can always show the Transit wallet.
+   */
+  app.get("/api/identity", (_req, res) => {
+    res.json({
+      wallet: userAccount.address,
+      router_url: AEGIS_ROUTER_BASE,
+      balance_path_template: "/v1/balance/{wallet}",
+    });
+  });
+
+  /**
+   * Aggregates local wallet + Router ledger balance.
+   * Upstream: GET `{AEGIS_ROUTER_URL}/v1/balance/{wallet}` (public).
+   */
+  app.get("/api/status", async (_req, res) => {
+    const wallet = userAccount.address;
+    const balanceUrl = AEGIS_BALANCE_ENDPOINT(wallet);
+
+    try {
+      const r = await fetch(balanceUrl, {
+        signal: AbortSignal.timeout(ROUTER_FETCH_TIMEOUT_MS),
+      });
+
+      let body: Record<string, unknown> = {};
+      try {
+        body = (await r.json()) as Record<string, unknown>;
+      } catch {
+        body = {};
+      }
+
+      if (!r.ok) {
+        const msg =
+          typeof body.message === "string"
+            ? body.message
+            : typeof body.error === "string"
+              ? body.error
+              : `Router returned HTTP ${r.status}`;
+        return res.json({
+          wallet,
+          credits: null,
+          usd_value: null,
+          scrapes_remaining: null,
+          router_online: false,
+          balance_error: msg,
+          balance_url: balanceUrl,
+        });
+      }
+
+      const credits = finiteNumberFromUnknown(
+        body.credit_balance ?? body.credits,
+      );
+      let usd_value = finiteNumberFromUnknown(body.usd_value);
+      if (usd_value === null && credits !== null) {
+        usd_value = Number((credits / CREDITS_PER_USD_API).toFixed(4));
+      }
+      const scrapes_remaining = finiteNumberFromUnknown(
+        body.scrapes_remaining,
+      );
+
+      return res.json({
+        wallet,
+        credits,
+        usd_value,
+        scrapes_remaining,
+        router_online: true,
+        balance_url: balanceUrl,
+        ...(credits === null
+          ? {
+              balance_error:
+                "Router balance response did not include a usable credits field (expected numeric credits or credit_balance).",
+            }
+          : {}),
+      });
+    } catch (e) {
+      const message =
+        e instanceof Error ? e.message : "Could not reach Router balance API.";
+      return res.json({
+        wallet,
+        credits: null,
+        usd_value: null,
+        scrapes_remaining: null,
         router_online: false,
+        balance_error: message,
+        balance_url: balanceUrl,
       });
     }
   });
@@ -193,9 +356,7 @@ export function createExpressApp(): express.Express {
   });
 
   // ─── Relay (Branch D) ──────────────────────────────────────────────
-  // Lightweight HTTP surface mirroring the `aegis-cli relay ...` CLI.
-  // Lets the dashboard / MCP host inspect or mutate the relay.json
-  // opt-ins without spawning a subprocess.
+  // HTTP surface for the dashboard to inspect or mutate relay.json opt-ins.
 
   app.get("/api/relay/status", (_req, res) => {
     const cfg = loadRelayConfig();

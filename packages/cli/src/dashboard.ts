@@ -1,521 +1,628 @@
-// Served verbatim at GET / on the local daemon.
-// Keep this self-contained — no external scripts, no build step.
+// GET /. `DASHBOARD_TRANSIT_WALLET_MARKER` → real address in express-app.ts (SSR).
+export const DASHBOARD_TRANSIT_WALLET_MARKER = "%%AEGIS_TRANSIT_WALLET_ADDR%%";
+
 export const DASHBOARD_HTML = /* html */ `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Aegis · Local Dashboard</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ctext y='26' font-size='26'%3E⚡%3C/text%3E%3C/svg%3E" />
+  <title>Aegis · Daemon</title>
   <style>
     :root {
-      --bg: #07080b;
-      --bg-elev: #0e1116;
-      --bg-elev-2: #141821;
-      --border: #1f242e;
-      --border-strong: #2a3140;
-      --text: #e6e8ee;
-      --text-dim: #8b93a7;
-      --text-faint: #5a6275;
-      --accent: #7cf9d0;
-      --accent-dim: #2b7a63;
-      --danger: #ff6b6b;
-      --warn: #ffb86b;
-      --ok: #7cf9d0;
-      --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+      --bg:#07080b; --elev:#0e1116; --elev2:#141821; --border:#1f242e; --border2:#2a3140;
+      --text:#e6e8ee; --dim:#8b93a7; --faint:#5a6275; --accent:#7cf9d0; --accent2:#2b7a63;
+      --danger:#ff6b6b; --warn:#ffb86b; --mono: ui-monospace, Menlo, monospace;
     }
     * { box-sizing: border-box; }
-    html, body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
-      font-size: 14px;
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-    }
     body {
-      min-height: 100vh;
-      background:
-        radial-gradient(1200px 600px at 15% -10%, rgba(124,249,208,0.06), transparent 60%),
-        radial-gradient(900px 500px at 90% 10%, rgba(124,180,249,0.05), transparent 60%),
-        var(--bg);
+      margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+      font: 14px/1.5 system-ui, sans-serif;
+      padding: 28px 20px 48px;
     }
-    .wrap {
-      max-width: 1180px;
-      margin: 0 auto;
-      padding: 32px 28px 80px;
-    }
+    .wrap { max-width: 920px; margin: 0 auto; }
     header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 20px;
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 22px; flex-wrap: wrap; gap: 12px;
     }
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
+    .title { font-weight: 700; font-size: 18px; }
+    .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
+    .pill {
+      display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px;
+      border-radius: 999px; font: 12px var(--mono); border: 1px solid rgba(124,249,208,.2);
+      background: rgba(124,249,208,.08); color: var(--accent);
     }
-    .brand-mark {
-      width: 34px; height: 34px;
-      border-radius: 9px;
-      background: linear-gradient(135deg, #7cf9d0, #4a9eff);
-      display: grid; place-items: center;
-      color: #061014;
-      font-weight: 800;
-      font-size: 17px;
-      box-shadow: 0 0 0 1px rgba(255,255,255,0.06), 0 8px 24px rgba(124,249,208,0.15);
+    .pill.offline {
+      border-color: rgba(255,107,107,.25); background: rgba(255,107,107,.08); color: var(--danger);
     }
-    .brand-name { font-weight: 700; letter-spacing: 0.2px; }
-    .brand-sub { color: var(--text-dim); font-size: 12px; }
-    .status-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 6px 12px;
-      border-radius: 999px;
-      background: rgba(124,249,208,0.08);
-      color: var(--accent);
-      border: 1px solid rgba(124,249,208,0.18);
-      font-size: 12px;
-      font-family: var(--mono);
+    .pill .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: currentColor;
     }
-    .status-pill .dot {
-      width: 8px; height: 8px; border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 0 4px rgba(124,249,208,0.15);
-      animation: pulse 1.8s ease-in-out infinite;
+    .grid2 {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px;
     }
-    .status-pill.offline {
-      background: rgba(255,107,107,0.08);
-      color: var(--danger);
-      border-color: rgba(255,107,107,0.2);
-    }
-    .status-pill.offline .dot {
-      background: var(--danger);
-      box-shadow: 0 0 0 4px rgba(255,107,107,0.15);
-      animation: none;
-    }
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50% { opacity: 0.55; }
-    }
-
-    /* Tabs */
-    .tabs {
-      display: inline-flex;
-      gap: 4px;
-      padding: 4px;
-      background: var(--bg-elev);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      margin-bottom: 22px;
-    }
-    .tab {
-      appearance: none;
-      background: transparent;
-      color: var(--text-dim);
-      border: 0;
-      padding: 8px 18px;
-      font: inherit;
-      font-size: 13px;
-      font-weight: 500;
-      border-radius: 7px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .tab:hover { color: var(--text); }
-    .tab.active {
-      background: var(--bg-elev-2);
-      color: var(--text);
-      box-shadow: inset 0 0 0 1px var(--border-strong);
-    }
-    .panel[hidden] { display: none !important; }
-
-    .grid {
-      display: grid;
-      grid-template-columns: 1.15fr 1fr;
-      gap: 18px;
-    }
-    @media (max-width: 860px) {
-      .grid { grid-template-columns: 1fr; }
-    }
-
+    @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
     .card {
-      background: linear-gradient(180deg, var(--bg-elev) 0%, #0a0d12 100%);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 20px 22px;
-      box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
+      background: var(--elev); border: 1px solid var(--border); border-radius: 12px;
+      padding: 18px 20px;
     }
     .card h2 {
-      margin: 0 0 14px;
-      font-size: 12px;
-      letter-spacing: 0.14em;
-      text-transform: uppercase;
-      color: var(--text-dim);
-      font-weight: 600;
+      margin: 0 0 12px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+      color: var(--dim); font-weight: 600;
     }
-    .row { display: flex; align-items: center; gap: 10px; }
-    .row + .row { margin-top: 10px; }
-
-    .wallet-addr {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 12px 14px;
-      background: var(--bg-elev-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      font-family: var(--mono);
-      font-size: 13px;
-      word-break: break-all;
+    .wallet-row {
+      display: flex; align-items: center; gap: 8px; padding: 12px;
+      background: var(--elev2); border: 1px solid var(--border); border-radius: 8px;
+      font: 13px var(--mono); word-break: break-all;
     }
-    .wallet-addr .addr { flex: 1; color: var(--text); }
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 10px;
-      background: transparent;
-      color: var(--text-dim);
-      border: 1px solid var(--border-strong);
-      border-radius: 7px;
-      font: inherit;
-      font-size: 12px;
-      cursor: pointer;
-      transition: all 0.15s ease;
-    }
-    .btn:hover:not(:disabled) {
-      color: var(--text);
-      border-color: var(--accent-dim);
-      background: rgba(124,249,208,0.04);
-    }
-    .btn.copied { color: var(--accent); border-color: var(--accent-dim); }
-    .btn.primary {
-      background: linear-gradient(135deg, #7cf9d0, #4a9eff);
-      color: #061014;
-      border-color: transparent;
-      font-weight: 600;
-      padding: 10px 16px;
-      font-size: 13px;
-    }
-    .btn.primary:hover:not(:disabled) {
-      color: #061014;
-      filter: brightness(1.08);
-    }
-    .btn:disabled {
-      opacity: 0.55;
-      cursor: not-allowed;
-    }
-
-    .hint {
-      margin-top: 12px;
-      color: var(--text-faint);
-      font-size: 12px;
-      line-height: 1.6;
-    }
-    .hint code {
-      font-family: var(--mono);
-      font-size: 11.5px;
-      color: var(--text-dim);
-      background: var(--bg-elev-2);
-      padding: 1px 6px;
-      border-radius: 4px;
-      border: 1px solid var(--border);
-    }
-    .chain-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 3px 9px;
-      border-radius: 5px;
-      background: rgba(74,158,255,0.1);
-      color: #7fb4ff;
-      border: 1px solid rgba(74,158,255,0.2);
-      font-size: 11px;
-      font-family: var(--mono);
-      margin-right: 6px;
-    }
-
-    .balance-main {
-      display: flex;
-      align-items: baseline;
-      gap: 10px;
-      margin: 4px 0 2px;
-    }
+    .wallet-row .addr { flex: 1; }
     .balance-num {
-      font-family: var(--mono);
-      font-size: 40px;
-      font-weight: 600;
-      color: var(--text);
-      letter-spacing: -0.01em;
-      font-variant-numeric: tabular-nums;
+      font: 600 36px var(--mono); letter-spacing: -.02em;
     }
-    .balance-unit { color: var(--text-dim); font-size: 13px; letter-spacing: 0.05em; text-transform: uppercase; }
-    .balance-sub {
-      color: var(--text-dim);
-      font-size: 12.5px;
-      font-family: var(--mono);
+    .balance-unit { color: var(--dim); font-size: 12px; margin-left: 6px; text-transform: uppercase; }
+    .balance-sub { margin-top: 6px; font: 12px var(--mono); color: var(--dim); }
+    .balance-sub.warn { color: var(--warn); }
+    .hint { margin-top: 10px; font-size: 12px; color: var(--faint); line-height: 1.5; }
+    .hint code {
+      font: 11px var(--mono); background: var(--elev2); padding: 2px 6px;
+      border-radius: 4px; border: 1px solid var(--border); color: var(--dim);
     }
-    .balance-sub .sep { color: var(--text-faint); margin: 0 8px; }
-    .empty-balance { color: var(--warn); }
-
-    /* Provider form */
-    .form-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
+    .btn {
+      padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border2);
+      background: transparent; color: var(--dim); font: inherit; font-size: 12px;
+      cursor: pointer;
     }
-    @media (max-width: 700px) {
-      .form-grid { grid-template-columns: 1fr; }
+    .btn:hover { color: var(--text); border-color: var(--accent2); }
+    .btn.primary {
+      background: linear-gradient(135deg,#7cf9d0,#4a9eff); color: #061014;
+      border: 0; font-weight: 600; padding: 10px 16px;
     }
-    .field { display: flex; flex-direction: column; gap: 6px; }
-    .field.full { grid-column: 1 / -1; }
+    .btn.danger { border-color: rgba(255,107,107,.4); color: var(--danger); }
+    .btn.sm { padding: 5px 10px; font-size: 11px; }
+    table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+    table.kv th, table.kv td {
+      padding: 10px 8px; text-align: left; border-bottom: 1px solid var(--border);
+    }
+    table.kv th {
+      font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--faint);
+    }
+    table.kv code { font: 12px var(--mono); color: var(--accent); }
+    .row-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+    .field { margin-bottom: 12px; }
     .field label {
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--text-faint);
-      font-weight: 600;
+      display: block; font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--faint); margin-bottom: 6px; font-weight: 600;
     }
-    .field input,
-    .field select,
-    .field textarea {
-      background: var(--bg-elev-2);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
-      color: var(--text);
-      font: inherit;
-      font-size: 13px;
-      font-family: var(--mono);
-      outline: none;
-      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    .field input, .field select {
+      width: 100%; max-width: 400px; padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--elev2); color: var(--text);
+      font: 13px var(--mono);
     }
-    .field input:focus,
-    .field select:focus,
-    .field textarea:focus {
-      border-color: var(--accent-dim);
-      box-shadow: 0 0 0 3px rgba(124,249,208,0.08);
+    .relay-banner {
+      font: 12px var(--mono); color: var(--dim); padding: 12px;
+      background: var(--elev2); border: 1px solid var(--border); border-radius: 8px;
+      margin-top: 14px; word-break: break-all;
     }
-    .field textarea {
-      min-height: 120px;
-      resize: vertical;
+    .relay-banner strong { color: var(--text); }
+    .section-label {
+      margin: 22px 0 10px; font-size: 10px; letter-spacing: .1em;
+      text-transform: uppercase; color: var(--faint); font-weight: 600;
     }
-    .field .help {
-      color: var(--text-faint);
-      font-size: 11.5px;
+    #relay-msg {
+      flex: 1; font: 12px var(--mono); color: var(--dim); min-height: 18px;
     }
-    .form-actions {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      margin-top: 16px;
-    }
-    .form-status {
-      flex: 1;
-      min-height: 20px;
-      font-size: 12.5px;
-      font-family: var(--mono);
-      color: var(--text-dim);
-      word-break: break-word;
-    }
-    .form-status.ok { color: var(--accent); }
-    .form-status.err { color: var(--danger); }
-    .form-status.busy { color: var(--warn); }
-
-    .earnings-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 14px;
-      margin-bottom: 16px;
-    }
-    @media (max-width: 700px) {
-      .earnings-grid { grid-template-columns: 1fr; }
-    }
-    .earnings-block {
-      background: var(--bg-elev-2);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px 16px;
-    }
-    .earnings-label {
-      color: var(--text-faint);
-      font-size: 11px;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      margin-bottom: 6px;
-    }
-    .earnings-value {
-      font-family: var(--mono);
-      font-size: 22px;
-      color: var(--text);
-      font-variant-numeric: tabular-nums;
-    }
-    .earnings-value .unit {
-      color: var(--text-dim);
-      font-size: 12px;
-      margin-left: 6px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-
-    footer {
-      margin-top: 32px;
-      color: var(--text-faint);
-      font-size: 11.5px;
-      font-family: var(--mono);
-      text-align: center;
-    }
-    footer a { color: var(--text-dim); text-decoration: none; }
-    footer a:hover { color: var(--accent); }
+    #relay-msg.ok { color: var(--accent); }
+    #relay-msg.err { color: var(--danger); }
+    #relay-msg.busy { color: var(--warn); }
+    .actions-row { display: flex; align-items: center; gap: 12px; margin-top: 14px; flex-wrap: wrap; }
+    #vault-msg { flex: 1; font: 12px var(--mono); color: var(--dim); min-height: 18px; }
+    #vault-msg.ok { color: var(--accent); }
+    #vault-msg.err { color: var(--danger); }
+    #vault-msg.busy { color: var(--warn); }
+    .masked { letter-spacing: 2px; color: var(--dim); font-family: var(--mono); }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <div class="brand">
-        <div class="brand-mark">⚡</div>
-        <div>
-          <div class="brand-name">Aegis Network</div>
-          <div class="brand-sub">Local Daemon Dashboard</div>
-        </div>
+      <div>
+        <div class="title">Aegis · Local daemon</div>
+        <div class="sub">Wallet and vault for this process only.</div>
       </div>
-      <div class="status-pill" id="status">
-        <span class="dot"></span>
-        <span id="status-text">connecting…</span>
-      </div>
+      <div class="pill" id="status"><span class="dot"></span> <span id="status-text">…</span></div>
     </header>
 
-    <!-- ════════════════════════════════════════════════════════════ -->
-    <!--  CONSUMER PANEL                                              -->
-    <!-- ════════════════════════════════════════════════════════════ -->
-    <!--                                                              -->
-    <!-- The Provider tab (service registration, earnings, claim) is  -->
-    <!-- gone: third-party providers can no longer register their own -->
-    <!-- tools, and first-party (Hydra) services self-register with   -->
-    <!-- the cloud Router on boot via POST /v1/hub/register. The      -->
-    <!-- daemon's only job here is to mirror the user's Transit       -->
-    <!-- Wallet + credit balance for funding.                         -->
-    <section class="panel" id="panel-consumer" role="tabpanel">
-      <div class="grid">
-        <div class="card">
-          <h2>Web3 Transit Wallet</h2>
-          <div class="wallet-addr">
-            <span class="addr" id="wallet-addr">—</span>
-            <button class="btn" id="copy-btn" type="button">Copy</button>
-          </div>
-          <div class="hint">
-            <span class="chain-badge">● Base</span>
-            Send USDC to this address to auto-deposit. A 1% gas fee is applied before credits are issued.
-          </div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Transit wallet</h2>
+        <div class="wallet-row">
+          <span class="addr" id="wallet-addr">${DASHBOARD_TRANSIT_WALLET_MARKER}</span>
+          <button type="button" class="btn" id="copy-btn">Copy</button>
         </div>
+        <p class="hint">Base · fund with USDC to receive credits (see Router / ledger rules).</p>
+      </div>
+      <div class="card">
+        <h2>Credit balance</h2>
+        <div>
+          <span class="balance-num" id="balance-num">—</span><span class="balance-unit">credits</span>
+        </div>
+        <div class="balance-sub" id="balance-sub">Loading…</div>
+      </div>
+    </div>
 
-        <div class="card">
-          <h2>Credit Balance</h2>
-          <div class="balance-main">
-            <span class="balance-num" id="balance-num">—</span>
-            <span class="balance-unit">credits</span>
-          </div>
-          <div class="balance-sub" id="balance-sub">
-            fetching balance…
-          </div>
+    <div class="card">
+      <h2>API keys &amp; relay</h2>
+      <p class="hint">Stored under <code>AEGIS_HOME</code> as <code>vault.json</code>. Values are never returned after save.</p>
+      <div style="overflow-x:auto;margin-top:14px;">
+        <table class="kv" aria-label="Vault keys">
+          <thead><tr><th>Key</th><th>Value</th><th style="text-align:right">Actions</th></tr></thead>
+          <tbody id="vault-tbody"></tbody>
+        </table>
+      </div>
+      <p id="vault-empty" class="hint" hidden>No keys yet — add one below.</p>
+      <div style="margin-top:20px;">
+        <div class="field">
+          <label for="vault-new-key">Key name</label>
+          <input id="vault-new-key" type="text" placeholder="NEWSAPI_API_KEY" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="field">
+          <label for="vault-new-val">Secret</label>
+          <input id="vault-new-val" type="password" autocomplete="new-password" spellcheck="false" />
+        </div>
+        <div class="actions-row">
+          <button type="button" class="btn primary" id="vault-add-btn">Save key</button>
+          <span id="vault-msg"></span>
         </div>
       </div>
-    </section>
 
-    <footer>
-      aegis-cli · refresh to update · <a href="https://github.com/" target="_blank" rel="noreferrer">docs</a>
-    </footer>
+      <div class="section-label">Relay listener</div>
+      <div class="relay-banner" id="relay-banner">Loading relay status…</div>
+
+      <div class="section-label">Registered relays</div>
+      <p id="relay-empty" class="hint" hidden>No relays registered.</p>
+      <div style="overflow-x:auto;">
+        <table class="kv" aria-label="Relay registrations">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Vault key</th>
+              <th>Fee</th>
+              <th>Limit / 24h</th>
+              <th style="text-align:right">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="relay-tbody"></tbody>
+        </table>
+      </div>
+
+      <div class="section-label">Register or update relay</div>
+      <p class="hint">Offer relay execution for a Skill Ledger provider id using a vault key above.</p>
+      <div class="field">
+        <label for="relay-slug">Provider slug</label>
+        <input id="relay-slug" type="text" placeholder="newsapi" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="field">
+        <label for="relay-vault-key">Vault key</label>
+        <select id="relay-vault-key"><option value="">— choose vault key —</option></select>
+      </div>
+      <div class="field">
+        <label for="relay-fee">Fee per relay (credits)</label>
+        <input id="relay-fee" type="number" min="0" step="1" value="10" />
+      </div>
+      <div class="field">
+        <label for="relay-rate">Max relays / 24h</label>
+        <input id="relay-rate" type="number" min="1" step="1" value="100" />
+      </div>
+      <div class="actions-row">
+        <button type="button" class="btn primary" id="relay-save-btn">Save relay</button>
+        <span id="relay-msg"></span>
+      </div>
+    </div>
   </div>
 
   <script>
-    // ════════════════════════════════════════════════════════════════
-    //  Module-level state (initialized up-top, never re-created)
-    // ════════════════════════════════════════════════════════════════
-    const CREDITS_PER_USD = 10000;
-
-    // ── helpers ────────────────────────────────────────────────────
-    const $ = (id) => document.getElementById(id);
-
-    const fmtNum = (n) =>
-      (n == null || Number.isNaN(n)) ? "—" : Number(n).toLocaleString("en-US");
-    const fmtUsd = (n) =>
-      (n == null || Number.isNaN(n)) ? "—" : "$" + Number(n).toFixed(4);
-
-    // ── copy wallet ────────────────────────────────────────────────
-    const copyBtn = $("copy-btn");
-    copyBtn.addEventListener("click", async () => {
-      const addr = $("wallet-addr").textContent && $("wallet-addr").textContent.trim();
-      if (!addr || addr === "—") return;
-      try {
-        await navigator.clipboard.writeText(addr);
-        copyBtn.textContent = "Copied";
-        copyBtn.classList.add("copied");
-        setTimeout(() => {
-          copyBtn.textContent = "Copy";
-          copyBtn.classList.remove("copied");
-        }, 1400);
-      } catch (_) {
-        /* noop */
+    var CREDITS_PER_USD = 10000;
+    function $(id) { return document.getElementById(id); }
+    function fmtNum(n) {
+      return (n == null || isNaN(n)) ? "—" : Number(n).toLocaleString("en-US");
+    }
+    function fmtUsd(n) {
+      return (n == null || isNaN(n)) ? "—" : ("$" + Number(n).toFixed(4));
+    }
+    function asFiniteNumber(v) {
+      if (v == null) return null;
+      if (typeof v === "number" && isFinite(v)) return v;
+      if (typeof v === "string" && v.trim() !== "") {
+        var n = Number(v);
+        return isFinite(n) ? n : null;
       }
-    });
+      return null;
+    }
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/\x3c/g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;");
+    }
+    function setOnline(on, msg) {
+      var pill = $("status"), txt = $("status-text");
+      if (!pill || !txt) return;
+      pill.classList.toggle("offline", !on);
+      txt.textContent = msg || (on ? "ok" : "offline");
+    }
+    function setMsg(el, text, kind) {
+      if (!el) return;
+      el.textContent = text || "";
+      el.classList.remove("ok", "err", "busy");
+      if (kind) el.classList.add(kind);
+    }
 
-    function setOnline(online, msg) {
-      const pill = $("status");
-      const txt = $("status-text");
-      if (online) {
-        pill.classList.remove("offline");
-        txt.textContent = msg || "connected";
-      } else {
-        pill.classList.add("offline");
-        txt.textContent = msg || "offline";
+    var vaultMsg = $("vault-msg");
+    var relayMsg = $("relay-msg");
+
+    function populateRelayVaultSelect(entries, preferredValue) {
+      var sel = $("relay-vault-key");
+      if (!sel) return;
+      var prev = preferredValue != null ? preferredValue : sel.value;
+      sel.innerHTML = '<option value="">— choose vault key —</option>';
+      entries.forEach(function (e) {
+        var opt = document.createElement("option");
+        opt.value = e.key;
+        opt.textContent = e.key + (e.has_value ? "" : " (empty)");
+        sel.appendChild(opt);
+      });
+      if (prev && [].some.call(sel.options, function (o) { return o.value === prev; }))
+        sel.value = prev;
+    }
+
+    function renderRelayLoadError(vaultEntries, msg) {
+      var banner = $("relay-banner"), tbody = $("relay-tbody"), emptyHint = $("relay-empty");
+      if (banner) banner.textContent = msg || "Relay unavailable.";
+      populateRelayVaultSelect(vaultEntries);
+      if (tbody) tbody.innerHTML = "";
+      if (emptyHint) emptyHint.hidden = false;
+    }
+
+    function renderRelayStatus(rs, vaultEntries) {
+      var banner = $("relay-banner"), tbody = $("relay-tbody"), emptyHint = $("relay-empty");
+      if (!banner || !tbody || !emptyHint) return;
+
+      var subs = Array.isArray(rs.subscriptions) ? rs.subscriptions : [];
+      var conn = rs.connected ? "connected" : "disconnected";
+      var w = typeof rs.wallet === "string" ? rs.wallet : "—";
+      banner.textContent = "";
+      var s1 = document.createElement("strong");
+      s1.textContent = "Listener";
+      banner.appendChild(s1);
+      banner.appendChild(document.createTextNode(": " + conn + " · "));
+      var s2 = document.createElement("strong");
+      s2.textContent = "Wallet";
+      banner.appendChild(s2);
+      banner.appendChild(document.createTextNode(": " + w + " · "));
+      var s3 = document.createElement("strong");
+      s3.textContent = "NATS subs";
+      banner.appendChild(s3);
+      banner.appendChild(document.createTextNode(": " + subs.length));
+
+      populateRelayVaultSelect(vaultEntries);
+
+      tbody.innerHTML = "";
+      var nodes = Array.isArray(rs.configured) ? rs.configured : [];
+      emptyHint.hidden = nodes.length > 0;
+      nodes.forEach(function (n) {
+        var tr = document.createElement("tr");
+        var tdP = document.createElement("td");
+        tdP.innerHTML = "<code>" + escapeHtml(n.provider_slug || "") + "</code>";
+        var tdV = document.createElement("td");
+        tdV.innerHTML = "<code>" + escapeHtml(n.vault_key_name || "") + "</code>";
+        var tdFee = document.createElement("td");
+        tdFee.style.fontFamily = "var(--mono)";
+        tdFee.textContent = String(n.fee_per_call ?? "—");
+        var tdRate = document.createElement("td");
+        tdRate.style.fontFamily = "var(--mono)";
+        tdRate.textContent = String(n.rate_limit_max ?? "—");
+        var tdA = document.createElement("td");
+        tdA.style.textAlign = "right";
+        var wrap = document.createElement("div");
+        wrap.className = "row-actions";
+        var btnEd = document.createElement("button");
+        btnEd.type = "button";
+        btnEd.className = "btn sm";
+        btnEd.textContent = "Edit";
+        btnEd.addEventListener("click", function () {
+          var slugEl = $("relay-slug"), feeEl = $("relay-fee"), rateEl = $("relay-rate");
+          if (slugEl) slugEl.value = (n.provider_slug || "").toLowerCase();
+          populateRelayVaultSelect(vaultEntries, n.vault_key_name || "");
+          if (feeEl) feeEl.value = String(n.fee_per_call != null ? n.fee_per_call : 10);
+          if (rateEl) rateEl.value = String(n.rate_limit_max != null ? n.rate_limit_max : 100);
+          if (slugEl) slugEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        });
+        var btnRm = document.createElement("button");
+        btnRm.type = "button";
+        btnRm.className = "btn sm danger";
+        btnRm.textContent = "Remove";
+        btnRm.addEventListener("click", async function () {
+          if (!confirm('Stop relay for "' + (n.provider_slug || "") + '"?')) return;
+          setMsg(relayMsg, "Removing…", "busy");
+          try {
+            var rd = await fetch("/api/relay/" + encodeURIComponent(n.provider_slug), { method: "DELETE" });
+            var js = await rd.json().catch(function () { return {}; });
+            if (!rd.ok) throw new Error(js.message || js.error || "delete failed");
+            setMsg(relayMsg, "Removed.", "ok");
+            await refreshAll();
+          } catch (err) {
+            setMsg(relayMsg, err.message || String(err), "err");
+          }
+        });
+        wrap.appendChild(btnEd);
+        wrap.appendChild(btnRm);
+        tdA.appendChild(wrap);
+        tr.appendChild(tdP);
+        tr.appendChild(tdV);
+        tr.appendChild(tdFee);
+        tr.appendChild(tdRate);
+        tr.appendChild(tdA);
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function refreshAll() {
+      var tbody = $("vault-tbody"), emptyHint = $("vault-empty");
+      if (!tbody || !emptyHint) return;
+
+      var vaultEntries = [];
+
+      tbody.innerHTML = "";
+      try {
+        var vr = await fetch("/api/vault", { cache: "no-store" });
+        if (!vr.ok) throw new Error("HTTP " + vr.status);
+        var vData = await vr.json();
+        vaultEntries = Array.isArray(vData.entries) ? vData.entries : [];
+        emptyHint.hidden = vaultEntries.length > 0;
+        vaultEntries.forEach(function (e) {
+          var tr = document.createElement("tr");
+          tr.dataset.key = e.key;
+          var tdK = document.createElement("td");
+          tdK.innerHTML = "<code>" + escapeHtml(e.key) + "</code>";
+          var tdV = document.createElement("td");
+          tdV.innerHTML = e.has_value
+            ? '<span class="masked">••••••••</span> <span style="color:var(--faint);font:11px var(--mono)">saved</span>'
+            : '<span style="color:var(--warn);font:12px var(--mono)">empty</span>';
+          var tdA = document.createElement("td");
+          tdA.style.textAlign = "right";
+          var wrap = document.createElement("div");
+          wrap.className = "row-actions";
+          var btnEd = document.createElement("button");
+          btnEd.type = "button"; btnEd.className = "btn sm"; btnEd.textContent = "Edit";
+          btnEd.addEventListener("click", function () { openVaultEdit(tr, e.key); });
+          var btnRm = document.createElement("button");
+          btnRm.type = "button"; btnRm.className = "btn sm danger"; btnRm.textContent = "Remove";
+          btnRm.addEventListener("click", async function () {
+            if (!confirm('Remove "' + e.key + '"?')) return;
+            setMsg(vaultMsg, "Removing…", "busy");
+            try {
+              var rd = await fetch("/api/vault/" + encodeURIComponent(e.key), { method: "DELETE" });
+              var js = await rd.json().catch(function () { return {}; });
+              if (!rd.ok) throw new Error(js.message || js.error || "delete failed");
+              setMsg(vaultMsg, "Removed.", "ok");
+              await refreshAll();
+            } catch (err) {
+              setMsg(vaultMsg, err.message || String(err), "err");
+            }
+          });
+          wrap.appendChild(btnEd); wrap.appendChild(btnRm); tdA.appendChild(wrap);
+          tr.appendChild(tdK); tr.appendChild(tdV); tr.appendChild(tdA);
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        emptyHint.hidden = false;
+        setMsg(vaultMsg, "Vault load failed: " + (err.message || err), "err");
+      }
+
+      try {
+        var rr = await fetch("/api/relay/status", { cache: "no-store" });
+        if (rr.ok) {
+          var relayStatus = await rr.json();
+          renderRelayStatus(relayStatus, vaultEntries);
+        } else {
+          renderRelayLoadError(
+            vaultEntries,
+            "Could not load relay status (HTTP " + rr.status + ").",
+          );
+        }
+      } catch (err) {
+        renderRelayLoadError(
+          vaultEntries,
+          "Relay status failed: " + (err.message || String(err)),
+        );
       }
     }
 
-    // ════════════════════════════════════════════════════════════════
-    //  Main polling loop
-    // ════════════════════════════════════════════════════════════════
-    //
-    // Wrapped in a single try/catch so network blips and transient
-    // errors never crash the script — the next tick will retry.
+    function openVaultEdit(tr, key) {
+      if (tr.querySelector(".vault-edit")) return;
+      var editTr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = 3;
+      td.style.background = "var(--elev2)";
+      td.style.padding = "14px";
+      td.innerHTML = "";
+      var wrap = document.createElement("div");
+      wrap.className = "vault-edit";
+      var lab = document.createElement("div");
+      lab.style.cssText = "font:12px var(--mono);color:var(--dim);margin-bottom:8px;";
+      lab.textContent = "New secret for " + key;
+      var inp = document.createElement("input");
+      inp.type = "password"; inp.placeholder = "Paste secret…";
+      inp.style.cssText = "width:100%;max-width:420px;padding:10px;border-radius:8px;border:1px solid var(--border);background:var(--bg);color:var(--text);font:13px var(--mono);";
+      var btns = document.createElement("div");
+      btns.style.cssText = "margin-top:10px;display:flex;gap:10px;";
+      var bSave = document.createElement("button");
+      bSave.type = "button"; bSave.className = "btn primary sm"; bSave.textContent = "Save";
+      var bCan = document.createElement("button");
+      bCan.type = "button"; bCan.className = "btn sm"; bCan.textContent = "Cancel";
+      bCan.addEventListener("click", function () { editTr.remove(); });
+      bSave.addEventListener("click", async function () {
+        var val = inp.value.trim();
+        if (!val) { alert("Enter a secret."); return; }
+        setMsg(vaultMsg, "Saving…", "busy");
+        try {
+          var rd = await fetch("/api/vault/" + encodeURIComponent(key), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ value: val }),
+          });
+          var js = await rd.json().catch(function () { return {}; });
+          if (!rd.ok) throw new Error(js.message || js.error || "save failed");
+          editTr.remove();
+          setMsg(vaultMsg, "Saved.", "ok");
+          await refreshAll();
+        } catch (err) {
+          setMsg(vaultMsg, err.message || String(err), "err");
+        }
+      });
+      btns.appendChild(bSave); btns.appendChild(bCan);
+      wrap.appendChild(lab); wrap.appendChild(inp); wrap.appendChild(btns);
+      td.appendChild(wrap); editTr.appendChild(td);
+      tr.parentNode.insertBefore(editTr, tr.nextSibling);
+      inp.focus();
+    }
+
+    var copyBtn = $("copy-btn");
+    if (copyBtn) {
+      copyBtn.addEventListener("click", async function () {
+        var wa = $("wallet-addr");
+        var a = wa && wa.textContent && wa.textContent.trim();
+        if (!a || a === "—") return;
+        try {
+          await navigator.clipboard.writeText(a);
+          copyBtn.textContent = "Copied";
+          setTimeout(function () { copyBtn.textContent = "Copy"; }, 1200);
+        } catch (_) {}
+      });
+    }
+
+    var addBtn = $("vault-add-btn");
+    if (addBtn) {
+      addBtn.addEventListener("click", async function () {
+        var kEl = $("vault-new-key"), vEl = $("vault-new-val");
+        var k = kEl && kEl.value.trim(), v = vEl && vEl.value.trim();
+        if (!k || !v) { setMsg(vaultMsg, "Key and secret required.", "err"); return; }
+        setMsg(vaultMsg, "Saving…", "busy");
+        try {
+          var rd = await fetch("/api/vault/" + encodeURIComponent(k), {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ value: v }),
+          });
+          var js = await rd.json().catch(function () { return {}; });
+          if (!rd.ok) throw new Error(js.message || js.error || "save failed");
+          kEl.value = ""; vEl.value = "";
+          setMsg(vaultMsg, "Saved.", "ok");
+          await refreshAll();
+        } catch (err) {
+          setMsg(vaultMsg, err.message || String(err), "err");
+        }
+      });
+    }
+
+    var relaySaveBtn = $("relay-save-btn");
+    if (relaySaveBtn) {
+      relaySaveBtn.addEventListener("click", async function () {
+        var slugEl = $("relay-slug"), vkEl = $("relay-vault-key");
+        var feeEl = $("relay-fee"), rateEl = $("relay-rate");
+        var slug = slugEl && slugEl.value.trim().toLowerCase();
+        var vaultKey = vkEl && vkEl.value.trim();
+        var fee = feeEl ? Number(feeEl.value) : NaN;
+        var rate = rateEl ? Number(rateEl.value) : NaN;
+        if (!slug || !vaultKey) {
+          setMsg(relayMsg, "Provider slug and vault key required.", "err");
+          return;
+        }
+        if (!Number.isInteger(fee) || fee < 0 || !Number.isInteger(rate) || rate < 1) {
+          setMsg(relayMsg, "Fee must be integer ≥ 0; limit must be integer ≥ 1.", "err");
+          return;
+        }
+        setMsg(relayMsg, "Saving…", "busy");
+        try {
+          var rd = await fetch("/api/relay/register", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              provider_slug: slug,
+              vault_key_name: vaultKey,
+              fee_per_call: fee,
+              rate_limit_max: rate,
+            }),
+          });
+          var js = await rd.json().catch(function () { return {}; });
+          if (!rd.ok)
+            throw new Error(js.message || js.error || "relay save failed");
+          setMsg(relayMsg, "Relay saved; listener reloaded.", "ok");
+          await refreshAll();
+        } catch (err) {
+          setMsg(relayMsg, err.message || String(err), "err");
+        }
+      });
+    }
+
+    async function fetchWalletIdentity() {
+      try {
+        var ir = await fetch("/api/identity", { cache: "no-store" });
+        if (!ir.ok) return;
+        var id = await ir.json();
+        var wa = $("wallet-addr");
+        var w = typeof id.wallet === "string" ? id.wallet.trim() : "";
+        if (wa && w) wa.textContent = w;
+      } catch (_) {}
+    }
+
     async function tick() {
       try {
-        const r = await fetch("/api/status", { cache: "no-store" });
-        if (!r.ok) throw new Error("status " + r.status);
-        const s = await r.json();
-
-        setOnline(
-          true,
-          s.router_online ? "connected · router live" : "connected · router offline"
-        );
-
-        $("wallet-addr").textContent = s.wallet || "—";
-
-        if (s.credits == null) {
-          $("balance-num").textContent = "—";
-          $("balance-sub").textContent = s.balance_error || "router unreachable";
+        var r = await fetch("/api/status", { cache: "no-store" });
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        var s = await r.json();
+        setOnline(true, s.router_online ? "Router OK" : "Router down");
+        var wa = $("wallet-addr");
+        if (wa) {
+          var w = typeof s.wallet === "string" ? s.wallet.trim() : "";
+          if (w) wa.textContent = w;
+        }
+        var bn = $("balance-num"), sub = $("balance-sub");
+        if (!bn || !sub) return;
+        var credits = asFiniteNumber(s.credit_balance != null ? s.credit_balance : s.credits);
+        var usdVal = asFiniteNumber(s.usd_value);
+        if (usdVal == null && credits != null) usdVal = credits / CREDITS_PER_USD;
+        var scrapes = asFiniteNumber(s.scrapes_remaining);
+        if (credits == null) {
+          bn.textContent = "—";
+          sub.classList.add("warn");
+          sub.textContent = s.balance_error || "Could not load balance";
         } else {
-          $("balance-num").textContent = fmtNum(s.credits);
-          const sub = $("balance-sub");
-          sub.classList.toggle("empty-balance", s.credits === 0);
-          const pieces = [];
-          if (s.usd_value != null) pieces.push(fmtUsd(s.usd_value));
-          if (s.scrapes_remaining != null)
-            pieces.push(fmtNum(s.scrapes_remaining) + " scrapes left");
-          sub.textContent = pieces.join(" · ") || "—";
+          bn.textContent = fmtNum(credits);
+          sub.classList.remove("warn");
+          var parts = [];
+          if (usdVal != null) parts.push(fmtUsd(usdVal));
+          if (scrapes != null) parts.push(fmtNum(scrapes) + " scrapes left");
+          sub.textContent = parts.join(" · ") || "—";
         }
       } catch (err) {
-        setOnline(false, "daemon unreachable");
+        setOnline(false, "Daemon unreachable");
+        await fetchWalletIdentity();
+        var bn = $("balance-num"), sub = $("balance-sub");
+        if (bn) bn.textContent = "—";
+        if (sub) {
+          sub.classList.add("warn");
+          sub.textContent = err.message || String(err);
+        }
       }
     }
 
     function loop() {
-      tick().finally(() => setTimeout(loop, 2000));
+      tick().finally(function () { setTimeout(loop, 2000); });
     }
-    loop();
+
+    refreshAll();
+    fetchWalletIdentity().finally(function () { loop(); });
   </script>
 </body>
 </html>

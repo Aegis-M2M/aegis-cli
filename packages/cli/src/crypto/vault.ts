@@ -220,3 +220,57 @@ export function setSecret(key: string, value: string): void {
   vault[key] = value;
   fs.writeFileSync(VAULT_PATH, JSON.stringify(vault, null, 2), { mode: 0o600 });
 }
+
+/** Vault keys must look like env-style identifiers (ASCII). */
+export const VAULT_KEY_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
+
+export interface VaultEntrySummary {
+  key: string;
+  /** True when the stored string is non-empty after trim. */
+  has_value: boolean;
+}
+
+/**
+ * List vault keys for dashboards — never returns secret values.
+ * Only top-level string entries are included (same shape as {@link setSecret}).
+ */
+export function listVaultSummary(): VaultEntrySummary[] {
+  try {
+    if (!fs.existsSync(VAULT_PATH)) return [];
+    const vault = JSON.parse(fs.readFileSync(VAULT_PATH, "utf-8")) as Record<
+      string,
+      unknown
+    >;
+    const out: VaultEntrySummary[] = [];
+    for (const [k, v] of Object.entries(vault)) {
+      if (typeof v !== "string") continue;
+      out.push({
+        key: k,
+        has_value: v.trim().length > 0,
+      });
+    }
+    out.sort((a, b) => a.key.localeCompare(b.key));
+    return out;
+  } catch (e) {
+    console.error("[Vault] listVaultSummary:", e);
+    return [];
+  }
+}
+
+/** Remove a key from `vault.json`. Returns false if the key did not exist. */
+export function deleteVaultKey(key: string): boolean {
+  if (typeof key !== "string" || key.length === 0 || key.length > 128) {
+    return false;
+  }
+  if (!fs.existsSync(VAULT_PATH)) return false;
+  const vault = JSON.parse(fs.readFileSync(VAULT_PATH, "utf-8")) as Record<
+    string,
+    unknown
+  >;
+  if (!(key in vault)) return false;
+  delete vault[key];
+  fs.writeFileSync(VAULT_PATH, JSON.stringify(vault, null, 2), {
+    mode: 0o600,
+  });
+  return true;
+}
