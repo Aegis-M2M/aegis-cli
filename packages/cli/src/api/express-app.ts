@@ -28,6 +28,7 @@ import {
   reloadRelayListener,
   startRelayListener,
 } from "../relay/listener.js";
+import { startOAuthRefresher } from "../crypto/oauth-refresher.js";
 import {
   loadRelayConfig,
   removeRelayNodeConfig,
@@ -36,12 +37,202 @@ import {
 import {
   deleteVaultKey,
   getSecret,
+  getVaultMetadata,
   listVaultSummary,
-  setSecret,
+  setVaultEntry,
   VAULT_KEY_NAME_RE,
+  type OAuthRefreshBlock,
+  type SecretType,
+  type VaultEntry,
 } from "../crypto/vault.js";
+import { nameLooksSensitive } from "../relay/firewall.js";
+import { listAuthRequired } from "./auth-events.js";
+import {
+  applyOverride,
+  deleteAuthOverride,
+  mergeListWithOverrides,
+  setAuthOverride,
+  type AuthInstructionsView,
+  type AuthOverridePatch,
+} from "./auth-overrides.js";
 
 const ROUTER_FETCH_TIMEOUT_MS = 12_000;
+const AUTH_METADATA_FETCH_TIMEOUT_MS = 6_000;
+const AUTH_METADATA_CACHE_TTL_MS = 60_000;
+
+// ─── Auth metadata passthrough cache ────────────────────────────────
+//
+// The proxy owns the authorize_instructions table; the router fronts
+// it at /v1/auth. Both endpoints are read-only and tolerate the proxy
+// being offline (we degrade to a 503 + cached fallback).
+
+interface AuthInstructionsBody {
+  provider: string;
+  auth_type: "PAT" | "OAUTH_PKCE" | "API_KEY";
+  authorize_url_template: string;
+  instructions: string[];
+  manifest?: Record<string, unknown>;
+  last_verified?: string;
+}
+
+interface SupportedProvidersBody {
+  providers: AuthInstructionsBody[];
+}
+
+const supportedProvidersCache: { at: number; body: SupportedProvidersBody | null } =
+  { at: 0, body: null };
+
+const instructionsCache = new Map<
+  string,
+  { at: number; body: AuthInstructionsBody | null }
+>();
+
+async function fetchSupportedProviders(): Promise<SupportedProvidersBody | null> {
+  const now = Date.now();
+  if (supportedProvidersCache.body && now - supportedProvidersCache.at < AUTH_METADATA_CACHE_TTL_MS) {
+    return supportedProvidersCache.body;
+  }
+  try {
+    const r = await fetch(`${AEGIS_ROUTER_BASE}/v1/auth/supported-providers`, {
+      signal: AbortSignal.timeout(AUTH_METADATA_FETCH_TIMEOUT_MS),
+    });
+    if (!r.ok) return supportedProvidersCache.body;
+    const body = (await r.json()) as SupportedProvidersBody;
+    supportedProvidersCache.at = now;
+    supportedProvidersCache.body = body;
+    return body;
+  } catch {
+    return supportedProvidersCache.body;
+  }
+}
+
+async function fetchInstructions(
+  provider: string,
+): Promise<AuthInstructionsBody | null> {
+  const now = Date.now();
+  const cached = instructionsCache.get(provider);
+  if (cached && now - cached.at < AUTH_METADATA_CACHE_TTL_MS) {
+    return cached.body;
+  }
+  try {
+    const r = await fetch(
+      `${AEGIS_ROUTER_BASE}/v1/auth/instructions/${encodeURIComponent(provider)}`,
+      { signal: AbortSignal.timeout(AUTH_METADATA_FETCH_TIMEOUT_MS) },
+    );
+    if (!r.ok) {
+      instructionsCache.set(provider, { at: now, body: null });
+      return null;
+    }
+    const body = (await r.json()) as AuthInstructionsBody;
+    instructionsCache.set(provider, { at: now, body });
+    return body;
+  } catch {
+    return cached?.body ?? null;
+  }
+}
+
+/** Strip credential-style suffixes off a vault key to derive a provider hint. */
+function vaultKeyToProviderId(key: string): string {
+  return key
+    .toUpperCase()
+    .replace(/_(API_KEY|API|KEY|SECRET|TOKEN|PAT|OAUTH)$/i, "")
+    .toLowerCase();
+}
+
+function inferLocalSecretType(name: string): SecretType {
+  const upper = name.toUpperCase();
+  if (upper.includes("OAUTH")) return "oauth";
+  if (upper.endsWith("_TOKEN") || upper.endsWith("_PAT")) return "pat";
+  return "api_key";
+}
+
+/**
+ * Decide the persisted Vault 2.0 entry for a PUT /api/vault/:key
+ * request. The CRITICAL_SECURITY_DIRECTIVE in the spec is that PAT
+ * and OAUTH types are hardcoded `shareable: false`, with no UI toggle
+ * able to override.
+ *
+ * Source-of-truth precedence (most authoritative first):
+ *   1. Proxy `authorize_instructions.auth_type` for the inferred
+ *      provider. This is the AuthResearcher's verdict.
+ *   2. Substring match against the egress blocklist (GITHUB / GOOGLE
+ *      / PAT / OAUTH) — even unrecognised providers must be quarantined.
+ *   3. Local heuristics on the key name (`_TOKEN` → pat, etc).
+ *
+ * For OAuth entries, an optional `refresh` block in the request body
+ * is validated and persisted alongside the access token. The
+ * background refresher then keeps `value` alive past the IdP's
+ * 1-hour expiry.
+ */
+async function decideVaultEntry(
+  key: string,
+  value: string,
+  bodyShareable: unknown,
+  bodyRefresh: unknown,
+): Promise<VaultEntry> {
+  const providerId = vaultKeyToProviderId(key);
+  const remote = providerId
+    ? await fetchInstructions(providerId).catch(() => null)
+    : null;
+
+  let type: SecretType;
+  if (remote?.auth_type === "PAT") type = "pat";
+  else if (remote?.auth_type === "OAUTH_PKCE") type = "oauth";
+  else type = inferLocalSecretType(key);
+
+  const sensitiveType = type === "pat" || type === "oauth";
+  const sensitiveName = nameLooksSensitive(key);
+
+  // Hard-code: PAT/OAUTH or blocklisted names are NEVER shareable.
+  const shareable =
+    sensitiveType || sensitiveName ? false : bodyShareable === true;
+
+  const refresh =
+    type === "oauth" ? coerceRefreshBlock(bodyRefresh) : undefined;
+
+  return { value, type, shareable, refresh };
+}
+
+/**
+ * Validate and shape an inbound OAuth refresh block. Reject silently
+ * (return undefined) when required fields are missing — the user can
+ * still save the access token, but the background refresher won't
+ * touch it.
+ */
+function coerceRefreshBlock(input: unknown): OAuthRefreshBlock | undefined {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return undefined;
+  const o = input as Record<string, unknown>;
+  const refresh_token =
+    typeof o.refresh_token === "string" ? o.refresh_token.trim() : "";
+  const token_url =
+    typeof o.token_url === "string" ? o.token_url.trim() : "";
+  const client_id =
+    typeof o.client_id === "string" ? o.client_id.trim() : "";
+  if (!refresh_token || !token_url || !client_id) return undefined;
+  // Basic URL sanity — reject obviously invalid token endpoints so a
+  // typo doesn't quietly disable the refresher.
+  try {
+    const u = new URL(token_url);
+    if (u.protocol !== "https:" && u.protocol !== "http:") return undefined;
+  } catch {
+    return undefined;
+  }
+  const block: OAuthRefreshBlock = {
+    refresh_token,
+    token_url,
+    client_id,
+  };
+  if (typeof o.client_secret === "string" && o.client_secret.length > 0) {
+    block.client_secret = o.client_secret;
+  }
+  if (typeof o.expires_at_ms === "number" && Number.isFinite(o.expires_at_ms)) {
+    block.expires_at_ms = o.expires_at_ms;
+  } else if (typeof o.expires_in === "number" && Number.isFinite(o.expires_in)) {
+    block.expires_at_ms = Date.now() + o.expires_in * 1000;
+  }
+  return block;
+}
 
 function finiteNumberFromUnknown(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
@@ -81,7 +272,7 @@ export function createExpressApp(): express.Express {
     }
   });
 
-  app.put("/api/vault/:key", (req, res) => {
+  app.put("/api/vault/:key", async (req, res) => {
     const rawKey =
       typeof req.params.key === "string"
         ? decodeURIComponent(req.params.key)
@@ -111,8 +302,22 @@ export function createExpressApp(): express.Express {
     }
 
     try {
-      setSecret(rawKey, trimmed);
-      res.json({ ok: true, key: rawKey, has_value: true });
+      const entry = await decideVaultEntry(
+        rawKey,
+        trimmed,
+        body.shareable,
+        body.refresh,
+      );
+      setVaultEntry(rawKey, entry);
+      res.json({
+        ok: true,
+        key: rawKey,
+        has_value: true,
+        type: entry.type,
+        shareable: entry.shareable,
+        has_refresh: !!entry.refresh,
+        expires_at_ms: entry.refresh?.expires_at_ms ?? null,
+      });
     } catch (e) {
       console.error("[Vault API] PUT /api/vault/:key:", e);
       res.status(500).json({ error: "VAULT_WRITE_FAILED" });
@@ -138,6 +343,87 @@ export function createExpressApp(): express.Express {
       console.error("[Vault API] DELETE /api/vault/:key:", e);
       res.status(500).json({ error: "VAULT_WRITE_FAILED" });
     }
+  });
+
+  // ─── Golden Path metadata (cached passthrough to router → proxy,
+  //     overlaid with the user's local overrides).
+  app.get("/api/auth/supported-providers", async (_req, res) => {
+    const body = await fetchSupportedProviders();
+    const upstream = body && Array.isArray(body.providers) ? body.providers : [];
+    const merged = mergeListWithOverrides(upstream as AuthInstructionsView[]);
+    if (!body && merged.length === 0) {
+      return res.status(503).json({
+        error: "AUTH_METADATA_UNAVAILABLE",
+        message:
+          "Could not reach the Aegis router for auth metadata. Try again in a moment.",
+      });
+    }
+    res.json({ providers: merged });
+  });
+
+  app.get("/api/auth/instructions/:provider", async (req, res) => {
+    const provider =
+      typeof req.params.provider === "string"
+        ? req.params.provider
+        : "";
+    if (!provider) {
+      return res.status(400).json({ error: "INVALID_PROVIDER" });
+    }
+    const upstream = (await fetchInstructions(provider)) as
+      | AuthInstructionsView
+      | null;
+    const merged = applyOverride(upstream, provider);
+    if (!merged) {
+      return res.status(404).json({ error: "NOT_FOUND", provider });
+    }
+    res.json(merged);
+  });
+
+  // Local overrides write surface — these never round-trip to the
+  // proxy, so a misbehaving (or deprecated) global Golden Path can
+  // be patched immediately on the user's own machine.
+  app.put("/api/auth/instructions/:provider", (req, res) => {
+    const provider =
+      typeof req.params.provider === "string"
+        ? req.params.provider
+        : "";
+    if (!provider) {
+      return res.status(400).json({ error: "INVALID_PROVIDER" });
+    }
+    const patch = (req.body ?? {}) as AuthOverridePatch;
+    try {
+      const persisted = setAuthOverride(provider, patch);
+      // Bust the in-memory cache so the next GET reflects the change.
+      supportedProvidersCache.body = null;
+      instructionsCache.delete(provider);
+      res.json({ ok: true, provider, patch: persisted });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(400).json({ error: "INVALID_OVERRIDE", message });
+    }
+  });
+
+  app.delete("/api/auth/instructions/:provider", (req, res) => {
+    const provider =
+      typeof req.params.provider === "string"
+        ? req.params.provider
+        : "";
+    if (!provider) {
+      return res.status(400).json({ error: "INVALID_PROVIDER" });
+    }
+    const removed = deleteAuthOverride(provider);
+    supportedProvidersCache.body = null;
+    instructionsCache.delete(provider);
+    res.json({ ok: true, removed });
+  });
+
+  // In-process AUTH_REQUIRED event ring. The LLM tool dispatcher
+  // pushes here whenever a 401 AUTH_REQUIRED comes back from the
+  // router; the dashboard polls this endpoint to render the modal.
+  app.get("/api/auth/recent-prompts", (req, res) => {
+    const since =
+      typeof req.query.since === "string" ? req.query.since : undefined;
+    res.json({ events: listAuthRequired(since) });
   });
 
   /**
@@ -397,6 +683,37 @@ export function createExpressApp(): express.Express {
       });
     }
 
+    // Egress firewall: refuse to relay PAT/OAUTH entries or anything
+    // whose name matches the blocklist, regardless of the user's
+    // shareable toggle. Defense-in-depth — the daemon's op:execute
+    // handler also enforces this in case a relay row was registered
+    // before the entry was tagged.
+    const meta = getVaultMetadata(vault);
+    if (!meta) {
+      return res.status(400).json({
+        error: "VAULT_MISS",
+        message: `Vault entry "${vault}" is missing metadata; re-add it via the dashboard.`,
+      });
+    }
+    if (meta.type === "pat" || meta.type === "oauth") {
+      return res.status(403).json({
+        error: "RESTRICTED_KEY_TYPE",
+        message: `Vault entry "${vault}" is type "${meta.type}" and cannot be used as a relay key.`,
+      });
+    }
+    if (nameLooksSensitive(vault)) {
+      return res.status(403).json({
+        error: "RESTRICTED_KEY_NAME",
+        message: `Vault key name "${vault}" matches the egress blocklist (GITHUB/GOOGLE/PAT/OAUTH) and cannot be used as a relay key.`,
+      });
+    }
+    if (!meta.shareable) {
+      return res.status(403).json({
+        error: "NOT_SHAREABLE",
+        message: `Vault entry "${vault}" is not marked shareable. Toggle it on in the dashboard before registering a relay.`,
+      });
+    }
+
     const next = upsertRelayNodeConfig({
       provider_slug: slug.toLowerCase(),
       vault_key_name: vault,
@@ -482,4 +799,8 @@ export async function startDaemonServer(port: number): Promise<void> {
   void startRelayListener().catch((err) => {
     console.warn("[Relay] startRelayListener crashed:", err);
   });
+
+  // OAuth access tokens expire on the order of 1h. Start the
+  // background refresher so agents don't lose access mid-task.
+  startOAuthRefresher();
 }

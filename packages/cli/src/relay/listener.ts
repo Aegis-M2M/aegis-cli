@@ -8,7 +8,7 @@ import {
 import { AEGIS_ROUTER_BASE } from "../config.js";
 import { userAccount } from "../crypto/identity.js";
 import { signAegisRequestHeaders } from "../crypto/signer.js";
-import { getSecret, resolveVaultSecret } from "../crypto/vault.js";
+import { getSecret, getVaultMetadata, resolveVaultSecret } from "../crypto/vault.js";
 import {
   cleanupCompiledRequestPlaceholders,
   injectSecretsIntoCompiled,
@@ -17,6 +17,7 @@ import {
   loadRelayConfig,
   type RelayNodeConfig,
 } from "./config.js";
+import { getShareableKeys, isEgressAllowed } from "./firewall.js";
 
 // ════════════════════════════════════════════════════════════════════
 //  Relay Listener — daemon-side NATS subscriber + executor
@@ -262,6 +263,32 @@ async function handleExecute(
 
   const boundKey = relayBoundVaultKey(envelope, node);
 
+  // Egress quarantine. Defense-in-depth: even if a malicious caller
+  // supplied a `vault_key_name` referencing a PAT/OAUTH entry on this
+  // host, refuse to relay before any fetch() happens. This is the
+  // backstop for the dashboard ingress + relay registration checks
+  // upstream — so that a hand-edited relay.json or a stale
+  // (pre-Vault-2.0) registration cannot leak identity tokens.
+  const checkNames: string[] = [];
+  for (const n of required) checkNames.push(n);
+  if (boundKey) checkNames.push(boundKey);
+  for (const name of checkNames) {
+    const meta = getVaultMetadata(name);
+    if (meta && !isEgressAllowed(name, meta)) {
+      console.warn(
+        `[Relay/Firewall] Refused op:execute slug=${node.provider_slug} key="${name}" type=${meta.type} shareable=${meta.shareable} request_id=${envelope.request_id ?? ""}`,
+      );
+      msg.respond(
+        jc.encode({
+          ok: false,
+          reason: "RESTRICTED_ACCESS",
+          message: `Vault entry "${name}" is not shareable over relay.`,
+        }),
+      );
+      return;
+    }
+  }
+
   // Sanity: each manifest secret must resolve in the vault, or we fall back
   // to the bound vault entry name stored on the relay row / relay.json.
   for (const name of required) {
@@ -440,6 +467,21 @@ async function subscribeNode(
   });
 }
 
+/**
+ * Build the heartbeat payload. Includes the connect token (for the
+ * Router's wallet-binding check) and a NAMES-ONLY snapshot of every
+ * vault entry that passes the egress firewall — i.e. the Community
+ * Pool index of "what this node is willing to relay". Bare key
+ * VALUES never traverse NATS.
+ */
+function buildHeartbeatPayload(): Record<string, unknown> {
+  return {
+    token: state.token,
+    ts: Date.now(),
+    shareable_keys: getShareableKeys(),
+  };
+}
+
 function startHeartbeat(): void {
   if (state.heartbeatTimer) return;
   state.heartbeatTimer = setInterval(() => {
@@ -447,10 +489,7 @@ function startHeartbeat(): void {
     try {
       state.nc.publish(
         healthSubject(userAccount.address),
-        jc.encode({
-          token: state.token,
-          ts: Date.now(),
-        }),
+        jc.encode(buildHeartbeatPayload()),
       );
     } catch (err) {
       console.warn("[Relay] heartbeat publish failed:", err);
@@ -593,7 +632,7 @@ export async function startRelayListener(): Promise<boolean> {
   try {
     nc.publish(
       healthSubject(userAccount.address),
-      jc.encode({ token: state.token, ts: Date.now() }),
+      jc.encode(buildHeartbeatPayload()),
     );
   } catch (err) {
     console.warn("[Relay] initial heartbeat failed:", err);

@@ -25,12 +25,14 @@ export function parseRouterExecuteError(
 }
 
 /**
- * Per-service fetch timeouts (ms). The omni-tool can chain Tier 1 → Tier 2
- * → Tier 3 (bridge synthesis) + an upstream API call, so it gets the same
- * 60s budget as the Router applies on its proxy hop.
+ * Per-service fetch timeouts (ms).
+ *
+ * `aegis-omni-tool`: Keep in sync with the Router proxy hop (`AEGIS_OMNI_PROXY_TIMEOUT_MS`, 120s).
+ * Cold runs run AuthResearcher after discovery; if the CLI timeout is shorter than the Router’s,
+ * the MCP client aborts with no reply while the proxy can still upsert `authorize_instructions`.
  */
 const SERVICE_FETCH_TIMEOUT_MS: Record<string, number> = {
-  "aegis-omni-tool": 60_000,
+  "aegis-omni-tool": 120_000,
   "aegis-bridge": 600_000,
 };
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;

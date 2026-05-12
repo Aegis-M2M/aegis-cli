@@ -30,6 +30,7 @@ import {
   executeAegisRequest,
   parseRouterExecuteError,
 } from "./router-client.js";
+import { pushAuthRequired } from "../api/auth-events.js";
 
 export function extractToolResult(serviceId: string, data: unknown): string {
   if (typeof data === "string") return data;
@@ -408,11 +409,88 @@ async function runAegisOmniCatalogInvocation(
         isError: true,
       };
     }
+    if (routed?.httpStatus === 401 && routed.body.error === "AUTH_REQUIRED") {
+      return formatAuthRequiredResult(routed.body);
+    }
     return {
       content: [{ type: "text", text: `Error: ${msg}` }],
       isError: true,
     };
   }
+}
+
+/**
+ * Translate an AUTH_REQUIRED 401 body into both:
+ *   1. A human-readable text block for the LLM (so it can explain
+ *      what the user needs to do, instead of looping on the failed
+ *      tool call).
+ *   2. A structured event on the in-process ring so the dashboard
+ *      can render the Golden Path modal.
+ */
+function formatAuthRequiredResult(body: Record<string, unknown>): {
+  content: { type: "text"; text: string }[];
+  isError?: boolean;
+} {
+  const provider =
+    typeof body.provider === "string" ? body.provider : "unknown";
+  const requiredSecrets = Array.isArray(body.required_secrets)
+    ? body.required_secrets.filter(
+        (x): x is string => typeof x === "string",
+      )
+    : [];
+  const authType =
+    body.auth_type === "PAT" ||
+    body.auth_type === "OAUTH_PKCE" ||
+    body.auth_type === "API_KEY"
+      ? body.auth_type
+      : "API_KEY";
+  const goldenPath =
+    typeof body.golden_path_url === "string" && body.golden_path_url.length > 0
+      ? body.golden_path_url
+      : null;
+  const instructions = Array.isArray(body.instructions)
+    ? body.instructions.filter((s): s is string => typeof s === "string")
+    : [];
+  const message =
+    typeof body.message === "string"
+      ? body.message
+      : `AUTH_REQUIRED: provider "${provider}" needs a credential.`;
+
+  pushAuthRequired({
+    provider,
+    required_secrets: requiredSecrets,
+    auth_type: authType,
+    golden_path_url: goldenPath,
+    instructions,
+    message,
+  });
+
+  const lines: string[] = [
+    "AUTH_REQUIRED",
+    "",
+    message,
+    "",
+    `Provider: ${provider}`,
+    `Auth type: ${authType}`,
+  ];
+  if (goldenPath) {
+    lines.push(`Golden Path URL: ${goldenPath}`);
+  }
+  if (instructions.length > 0) {
+    lines.push("");
+    lines.push("Steps:");
+    instructions.forEach((step, idx) => {
+      lines.push(`  ${idx + 1}. ${step}`);
+    });
+  }
+  if (requiredSecrets.length > 0) {
+    lines.push("");
+    lines.push(formatUserInstructionsForSecrets(requiredSecrets));
+  }
+  return {
+    content: [{ type: "text", text: lines.join("\n") }],
+    isError: true,
+  };
 }
 
 // ─── aegis-search / aegis-parse ─────────────────────────────────────
