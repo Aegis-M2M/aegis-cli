@@ -55,6 +55,7 @@ import {
   type AuthInstructionsView,
   type AuthOverridePatch,
 } from "./auth-overrides.js";
+import { browserManager } from "../browser/browser-manager.js";
 
 const ROUTER_FETCH_TIMEOUT_MS = 12_000;
 const AUTH_METADATA_FETCH_TIMEOUT_MS = 6_000;
@@ -803,4 +804,10 @@ export async function startDaemonServer(port: number): Promise<void> {
   // OAuth access tokens expire on the order of 1h. Start the
   // background refresher so agents don't lose access mid-task.
   startOAuthRefresher();
+
+  // Warm the Universal Browser MCP profile on daemon boot. Failures are
+  // retried once on the first browser tool call via BrowserManager auto-heal.
+  void browserManager.start().catch((err) => {
+    console.warn("[Browser] warm start failed:", err);
+  });
 }

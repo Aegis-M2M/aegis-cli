@@ -376,19 +376,17 @@ const VAULT_KEY_HINT_SUFFIX = /_(API_KEY|TOKEN|SECRET|KEY)$/i;
 /**
  * For each vault key that looks like a provider credential (suffix
  * `_API_KEY`, `_TOKEN`, `_SECRET`, or `_KEY`) with a non-empty value, returns
- * the onion-peel brand (e.g. `POLYGON_API_KEY` → `POLYGON`).
+ * the onion-peel brand (e.g. `POLYGON_API_KEY` → `POLYGON`,
+ * `TODOIST_API_TOKEN` → `TODOIST`).
  *
- * Only entries with {@link SecretType} `"api_key"` are included. PATs,
- * OAuth access tokens, and other user-scoped secrets must not leak into omni
- * `key_hints` — they skew bridge search and doc URL selection toward the
- * wrong provider (e.g. GitHub for a LinkedIn intent). Local delegation still
- * resolves those secrets by name when a manifest actually requires them.
+ * Includes all {@link SecretType}s (`api_key`, `pat`, `oauth`). Hints are
+ * sent to the proxy for execution routing (LOCAL branch) and for ranking
+ * discovery hits; bridge web search no longer uses them to build the query.
  */
-export function listApiKeyProviderHintsFromVault(): string[] {
+export function listProviderHintsFromVault(): string[] {
   const vault = readVault();
   const hints = new Set<string>();
   for (const [name, entry] of Object.entries(vault)) {
-    if (entry.type !== "api_key") continue;
     if (!VAULT_KEY_HINT_SUFFIX.test(name)) continue;
     if (typeof entry.value !== "string" || entry.value.trim().length === 0)
       continue;
@@ -397,6 +395,9 @@ export function listApiKeyProviderHintsFromVault(): string[] {
   }
   return [...hints].sort();
 }
+
+/** @deprecated Use {@link listProviderHintsFromVault} */
+export const listApiKeyProviderHintsFromVault = listProviderHintsFromVault;
 
 /**
  * Persist a secret value while preserving (or inferring) its metadata.

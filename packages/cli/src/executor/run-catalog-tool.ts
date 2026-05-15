@@ -19,7 +19,7 @@
 
 import {
   formatUserInstructionsForSecrets,
-  listApiKeyProviderHintsFromVault,
+  listProviderHintsFromVault,
   resolveVaultSecret,
 } from "../crypto/vault.js";
 import {
@@ -184,7 +184,7 @@ async function runAegisOmniCatalogInvocation(
 
   // Standardize hints: strip *_API_KEY / *_SECRET / *_TOKEN / *_KEY suffixes
   // so the proxy can do a plain prefix match against manifest required_secrets.
-  const vaultHints = listApiKeyProviderHintsFromVault();
+  const vaultHints = listProviderHintsFromVault();
   const rawExtra = args.key_hints;
   const extra = Array.isArray(rawExtra)
     ? rawExtra.filter(

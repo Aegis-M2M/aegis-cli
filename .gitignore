@@ -10,3 +10,5 @@ agent-test.ts
 # Workspace package build outputs / local installs
 packages/*/dist
 packages/*/node_modules
+
+packages/cli/src/scripts/

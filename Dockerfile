@@ -13,6 +13,15 @@ COPY packages/client/package.json ./packages/client/
 # This will link @aegis-m2m/client into the @aegis-m2m/cli node_modules
 RUN npm ci
 
+# Playwright bundles only the Node driver in npm — browsers live under ~/.cache/ms-playwright.
+# Without this step the daemon fails on boot when BrowserManager tries to launch Chromium.
+#
+# Omit `--with-deps`: it runs `apt-get` on Debian and can fail in Docker Desktop with GPG /
+# "invalid signature" mirror errors while downloading browsers works fine via Playwright CDN.
+# If Chromium exits at runtime with missing shared-library errors, rebuild after fixing apt,
+# or base this image on `mcr.microsoft.com/playwright:<version>-jammy`.
+RUN npx playwright install chromium
+
 # 3. Copy the actual source code for all packages
 COPY packages/ ./packages/
 
