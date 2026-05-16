@@ -97,6 +97,7 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       border: 1px solid var(--border); background: var(--elev2); color: var(--text);
       font: 13px var(--mono);
     }
+    .field.hidden { display: none; }
     .relay-banner {
       font: 12px var(--mono); color: var(--dim); padding: 12px;
       background: var(--elev2); border: 1px solid var(--border); border-radius: 8px;
@@ -183,7 +184,8 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
         <table class="kv" aria-label="Relay registrations">
           <thead>
             <tr>
-              <th>Provider</th>
+              <th>Type</th>
+              <th>Provider / domain</th>
               <th>Vault key</th>
               <th>Fee</th>
               <th>Limit / 24h</th>
@@ -195,12 +197,24 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       </div>
 
       <div class="section-label">Register or update relay</div>
-      <p class="hint">Offer relay execution for a Skill Ledger provider id using a vault key above.</p>
+      <p class="hint">Offer relay execution for an API provider key, or for URL extraction on domains you can access locally.</p>
       <div class="field">
-        <label for="relay-slug">Provider slug</label>
+        <label for="relay-type">Relay type</label>
+        <select id="relay-type">
+          <option value="api">API provider relay</option>
+          <option value="domain">URL/domain extraction relay</option>
+        </select>
+      </div>
+      <div class="field" id="relay-slug-field">
+        <label for="relay-slug" id="relay-slug-label">Provider slug</label>
         <input id="relay-slug" type="text" placeholder="newsapi" autocomplete="off" spellcheck="false" />
       </div>
-      <div class="field">
+      <div class="field hidden" id="relay-domain-field">
+        <label for="relay-domain">Domain</label>
+        <input id="relay-domain" type="text" placeholder="google.com" autocomplete="off" spellcheck="false" />
+        <p class="hint">Enter the registrable domain. Aegis will match this against requested URLs using domain parsing, including subdomains.</p>
+      </div>
+      <div class="field" id="relay-vault-field">
         <label for="relay-vault-key">Vault key</label>
         <select id="relay-vault-key"><option value="">— choose vault key —</option></select>
       </div>
@@ -275,6 +289,19 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
         sel.value = prev;
     }
 
+    function relayTypeOf(n) {
+      return n && n.relay_type === "domain" ? "domain" : "api";
+    }
+
+    function updateRelayFormMode() {
+      var typeEl = $("relay-type"), slugField = $("relay-slug-field");
+      var vaultField = $("relay-vault-field"), domainField = $("relay-domain-field");
+      var isDomain = typeEl && typeEl.value === "domain";
+      if (slugField) slugField.classList.toggle("hidden", isDomain);
+      if (vaultField) vaultField.classList.toggle("hidden", isDomain);
+      if (domainField) domainField.classList.toggle("hidden", !isDomain);
+    }
+
     function renderRelayLoadError(vaultEntries, msg) {
       var banner = $("relay-banner"), tbody = $("relay-tbody"), emptyHint = $("relay-empty");
       if (banner) banner.textContent = msg || "Relay unavailable.";
@@ -310,11 +337,18 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
       var nodes = Array.isArray(rs.configured) ? rs.configured : [];
       emptyHint.hidden = nodes.length > 0;
       nodes.forEach(function (n) {
+        var relayType = relayTypeOf(n);
         var tr = document.createElement("tr");
+        var tdType = document.createElement("td");
+        tdType.innerHTML = "<code>" + escapeHtml(relayType) + "</code>";
         var tdP = document.createElement("td");
-        tdP.innerHTML = "<code>" + escapeHtml(n.provider_slug || "") + "</code>";
+        tdP.innerHTML = relayType === "domain" && n.relay_domain
+          ? "<code>" + escapeHtml(n.relay_domain) + "</code>"
+          : "<code>" + escapeHtml(n.provider_slug || "") + "</code>";
         var tdV = document.createElement("td");
-        tdV.innerHTML = "<code>" + escapeHtml(n.vault_key_name || "") + "</code>";
+        tdV.innerHTML = n.vault_key_name
+          ? "<code>" + escapeHtml(n.vault_key_name) + "</code>"
+          : '<span style="color:var(--faint);font:12px var(--mono)">—</span>';
         var tdFee = document.createElement("td");
         tdFee.style.fontFamily = "var(--mono)";
         tdFee.textContent = String(n.fee_per_call ?? "—");
@@ -330,8 +364,12 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
         btnEd.className = "btn sm";
         btnEd.textContent = "Edit";
         btnEd.addEventListener("click", function () {
-          var slugEl = $("relay-slug"), feeEl = $("relay-fee"), rateEl = $("relay-rate");
+          var typeEl = $("relay-type"), slugEl = $("relay-slug"), domainEl = $("relay-domain");
+          var feeEl = $("relay-fee"), rateEl = $("relay-rate");
+          if (typeEl) typeEl.value = relayType;
+          updateRelayFormMode();
           if (slugEl) slugEl.value = (n.provider_slug || "").toLowerCase();
+          if (domainEl) domainEl.value = n.relay_domain || "";
           populateRelayVaultSelect(vaultEntries, n.vault_key_name || "");
           if (feeEl) feeEl.value = String(n.fee_per_call != null ? n.fee_per_call : 10);
           if (rateEl) rateEl.value = String(n.rate_limit_max != null ? n.rate_limit_max : 100);
@@ -357,6 +395,7 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
         wrap.appendChild(btnEd);
         wrap.appendChild(btnRm);
         tdA.appendChild(wrap);
+        tr.appendChild(tdType);
         tr.appendChild(tdP);
         tr.appendChild(tdV);
         tr.appendChild(tdFee);
@@ -526,16 +565,31 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
     }
 
     var relaySaveBtn = $("relay-save-btn");
+    var relayTypeEl = $("relay-type");
+    if (relayTypeEl) {
+      relayTypeEl.addEventListener("change", updateRelayFormMode);
+      updateRelayFormMode();
+    }
     if (relaySaveBtn) {
       relaySaveBtn.addEventListener("click", async function () {
-        var slugEl = $("relay-slug"), vkEl = $("relay-vault-key");
-        var feeEl = $("relay-fee"), rateEl = $("relay-rate");
+        var typeEl = $("relay-type"), slugEl = $("relay-slug"), vkEl = $("relay-vault-key");
+        var domainEl = $("relay-domain"), feeEl = $("relay-fee"), rateEl = $("relay-rate");
+        var relayType = typeEl && typeEl.value === "domain" ? "domain" : "api";
         var slug = slugEl && slugEl.value.trim().toLowerCase();
         var vaultKey = vkEl && vkEl.value.trim();
+        var relayDomain = domainEl && domainEl.value.trim();
         var fee = feeEl ? Number(feeEl.value) : NaN;
         var rate = rateEl ? Number(rateEl.value) : NaN;
-        if (!slug || !vaultKey) {
+        if (relayType === "api" && !slug) {
+          setMsg(relayMsg, "Provider slug required.", "err");
+          return;
+        }
+        if (relayType === "api" && !vaultKey) {
           setMsg(relayMsg, "Provider slug and vault key required.", "err");
+          return;
+        }
+        if (relayType === "domain" && !relayDomain) {
+          setMsg(relayMsg, "Domain required for URL/domain relays.", "err");
           return;
         }
         if (!Number.isInteger(fee) || fee < 0 || !Number.isInteger(rate) || rate < 1) {
@@ -548,8 +602,10 @@ export const DASHBOARD_HTML = /* html */ `<!doctype html>
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              provider_slug: slug,
-              vault_key_name: vaultKey,
+              provider_slug: relayType === "api" ? slug : "",
+              relay_type: relayType,
+              relay_domain: relayType === "domain" ? relayDomain : "",
+              vault_key_name: relayType === "api" ? vaultKey : (vaultKey || ""),
               fee_per_call: fee,
               rate_limit_max: rate,
             }),

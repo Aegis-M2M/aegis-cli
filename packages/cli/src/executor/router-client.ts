@@ -34,6 +34,7 @@ export function parseRouterExecuteError(
 const SERVICE_FETCH_TIMEOUT_MS: Record<string, number> = {
   "aegis-omni-tool": 120_000,
   "aegis-bridge": 600_000,
+  "aegis-html-to-markdown": 60_000,
 };
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 

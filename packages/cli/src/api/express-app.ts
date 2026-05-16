@@ -1,6 +1,7 @@
 import cors from "cors";
 import express from "express";
 import { randomUUID } from "crypto";
+import { getDomain } from "tldts";
 import {
   DASHBOARD_HTML,
   DASHBOARD_TRANSIT_WALLET_MARKER,
@@ -60,6 +61,22 @@ import { browserManager } from "../browser/browser-manager.js";
 const ROUTER_FETCH_TIMEOUT_MS = 12_000;
 const AUTH_METADATA_FETCH_TIMEOUT_MS = 6_000;
 const AUTH_METADATA_CACHE_TTL_MS = 60_000;
+
+function normalizeRelayDomain(input: string): string | null {
+  const raw = input.trim().toLowerCase();
+  if (!raw) return null;
+  const parsed = getDomain(raw, { allowPrivateDomains: true });
+  if (parsed) return parsed.toLowerCase();
+  try {
+    return getDomain(new URL(raw).href, { allowPrivateDomains: true })?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function slugFromRelayDomain(domain: string): string {
+  return `${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 56)}-domain`;
+}
 
 // ─── Auth metadata passthrough cache ────────────────────────────────
 //
@@ -657,16 +674,25 @@ export function createExpressApp(): express.Express {
 
   app.post("/api/relay/register", async (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const slug = body.provider_slug;
     const vault = body.vault_key_name;
     const fee = body.fee_per_call;
     const rate = body.rate_limit_max;
+    const relayType = body.relay_type === "domain" ? "domain" : "api";
+    const relayDomain =
+      relayType === "domain" && typeof body.relay_domain === "string"
+        ? normalizeRelayDomain(body.relay_domain)
+        : null;
+    const slug =
+      relayType === "domain" && relayDomain
+        ? slugFromRelayDomain(relayDomain)
+        : body.provider_slug;
 
     if (
       typeof slug !== "string" ||
       !SERVICE_ID_RE.test(slug) ||
       typeof vault !== "string" ||
-      vault.length === 0 ||
+      (relayType === "api" && vault.length === 0) ||
+      (relayType === "domain" && !relayDomain) ||
       typeof fee !== "number" ||
       !Number.isInteger(fee) ||
       fee < 0 ||
@@ -677,7 +703,7 @@ export function createExpressApp(): express.Express {
       return res.status(400).json({ error: "INVALID_RELAY_REGISTRATION" });
     }
 
-    if (!getSecret(vault)) {
+    if (vault.length > 0 && !getSecret(vault)) {
       return res.status(400).json({
         error: "VAULT_MISS",
         message: `Vault has no value for key "${vault}". Add it to vault.json before registering as a relay.`,
@@ -689,30 +715,33 @@ export function createExpressApp(): express.Express {
     // shareable toggle. Defense-in-depth — the daemon's op:execute
     // handler also enforces this in case a relay row was registered
     // before the entry was tagged.
-    const meta = getVaultMetadata(vault);
+    const meta = vault.length > 0 ? getVaultMetadata(vault) : null;
     if (!meta) {
-      return res.status(400).json({
-        error: "VAULT_MISS",
-        message: `Vault entry "${vault}" is missing metadata; re-add it via the dashboard.`,
-      });
-    }
-    if (meta.type === "pat" || meta.type === "oauth") {
-      return res.status(403).json({
-        error: "RESTRICTED_KEY_TYPE",
-        message: `Vault entry "${vault}" is type "${meta.type}" and cannot be used as a relay key.`,
-      });
-    }
-    if (nameLooksSensitive(vault)) {
-      return res.status(403).json({
-        error: "RESTRICTED_KEY_NAME",
-        message: `Vault key name "${vault}" matches the egress blocklist (GITHUB/GOOGLE/PAT/OAUTH) and cannot be used as a relay key.`,
-      });
-    }
-    if (!meta.shareable) {
-      return res.status(403).json({
-        error: "NOT_SHAREABLE",
-        message: `Vault entry "${vault}" is not marked shareable. Toggle it on in the dashboard before registering a relay.`,
-      });
+      if (relayType === "api") {
+        return res.status(400).json({
+          error: "VAULT_MISS",
+          message: `Vault entry "${vault}" is missing metadata; re-add it via the dashboard.`,
+        });
+      }
+    } else {
+      if (meta.type === "pat" || meta.type === "oauth") {
+        return res.status(403).json({
+          error: "RESTRICTED_KEY_TYPE",
+          message: `Vault entry "${vault}" is type "${meta.type}" and cannot be used as a relay key.`,
+        });
+      }
+      if (nameLooksSensitive(vault)) {
+        return res.status(403).json({
+          error: "RESTRICTED_KEY_NAME",
+          message: `Vault key name "${vault}" matches the egress blocklist (GITHUB/GOOGLE/PAT/OAUTH) and cannot be used as a relay key.`,
+        });
+      }
+      if (!meta.shareable) {
+        return res.status(403).json({
+          error: "NOT_SHAREABLE",
+          message: `Vault entry "${vault}" is not marked shareable. Toggle it on in the dashboard before registering a relay.`,
+        });
+      }
     }
 
     const next = upsertRelayNodeConfig({
@@ -720,6 +749,8 @@ export function createExpressApp(): express.Express {
       vault_key_name: vault,
       fee_per_call: fee,
       rate_limit_max: rate,
+      relay_type: relayType,
+      relay_domain: relayType === "domain" ? relayDomain ?? "" : "",
     });
 
     try {

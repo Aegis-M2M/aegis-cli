@@ -13,11 +13,13 @@ import {
   cleanupCompiledRequestPlaceholders,
   injectSecretsIntoCompiled,
 } from "../executor/preflight.js";
+import { executeAegisRequest } from "../executor/router-client.js";
 import {
   loadRelayConfig,
   type RelayNodeConfig,
 } from "./config.js";
 import { getShareableKeys, isEgressAllowed } from "./firewall.js";
+import { browserManager, BrowserBusyError } from "../browser/browser-manager.js";
 
 // ════════════════════════════════════════════════════════════════════
 //  Relay Listener — daemon-side NATS subscriber + executor
@@ -28,7 +30,8 @@ import { getShareableKeys, isEgressAllowed } from "./firewall.js";
 //
 //   ack     — quick liveness reply so the Router can race candidates.
 //   execute — substitute vault secrets into the supplied template,
-//             fetch upstream, and reply with the response.
+//             then either fetch upstream (API relay) or load the URL via
+//             Playwright using the persisted browser profile (domain relay).
 //
 // Heartbeats are published every 15s on `aegis.relay.v1.health.<wallet>`
 // with the Router-issued connect token so the Router can verify the
@@ -48,7 +51,49 @@ const TOKEN_REFRESH_LEAD_MS = 5 * 60_000;
 const FETCH_TIMEOUT_MS = 30_000;
 const RECONNECT_BACKOFF_MS = 5_000;
 
+const RELAY_BROWSER_DOMAIN_DISABLED =
+  process.env.AEGIS_RELAY_USE_BROWSER_DOMAIN === "0";
+
 const jc = JSONCodec();
+
+const HTML_TO_MARKDOWN_SERVICE = "aegis-html-to-markdown";
+
+function shouldUseBrowserForRelayExecute(
+  node: RelayNodeConfig,
+  methodUpper: string,
+  body?: unknown,
+): boolean {
+  if (RELAY_BROWSER_DOMAIN_DISABLED) return false;
+  const isDomainRelay =
+    node.relay_type === "domain" || node.provider_slug.endsWith("-domain");
+  if (!isDomainRelay) return false;
+  if (methodUpper !== "GET") return false;
+  if (body !== undefined && body !== null) return false;
+  return true;
+}
+
+function extractMarkdownFromParseResponse(response: unknown): string {
+  const root =
+    response && typeof response === "object" && !Array.isArray(response)
+      ? (response as Record<string, unknown>)
+      : {};
+  const data =
+    root.data && typeof root.data === "object" && !Array.isArray(root.data)
+      ? (root.data as Record<string, unknown>)
+      : {};
+
+  for (const value of [
+    data.content,
+    data.markdown,
+    root.content,
+    root.markdown,
+  ]) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+
+  if (typeof response === "string" && response.trim()) return response;
+  throw new Error("aegis-html-to-markdown returned no markdown content.");
+}
 
 interface ConnectResponse {
   ok: boolean;
@@ -165,6 +210,8 @@ async function publishRelayNodeToRouter(
     },
     body: JSON.stringify({
       provider_slug: node.provider_slug,
+      relay_type: node.relay_type ?? "api",
+      relay_domain: node.relay_domain ?? "",
       fee_per_call: node.fee_per_call,
       rate_limit_max: node.rate_limit_max,
       vault_key_name: node.vault_key_name,
@@ -354,6 +401,73 @@ async function handleExecute(
   console.error(
     `[Relay] Executing op:execute slug=${node.provider_slug} url=${injected.url}`,
   );
+
+  if (shouldUseBrowserForRelayExecute(node, methodUpper, injected.body)) {
+    console.error(
+      `[Relay] Domain relay via Playwright slug=${node.provider_slug}`,
+    );
+    try {
+      const loaded = await browserManager.loadPageHtml(injected.url);
+      console.error(
+        `[Relay] Converting browser HTML via ${HTML_TO_MARKDOWN_SERVICE} slug=${node.provider_slug} html_len=${loaded.html.length}`,
+      );
+      const markdownResponse = await executeAegisRequest(
+        HTML_TO_MARKDOWN_SERVICE,
+        {
+          html: loaded.html,
+          url: loaded.finalUrl,
+        },
+      );
+      const markdown = extractMarkdownFromParseResponse(markdownResponse);
+      const exec_ms = Date.now() - startMs;
+      msg.respond(
+        jc.encode({
+          ok: true,
+          status: 200,
+          headers: {
+            "content-type": "text/markdown; charset=utf-8",
+            "x-aegis-relay-via": "browser",
+            "x-aegis-relay-normalized-by": HTML_TO_MARKDOWN_SERVICE,
+          },
+          body: {
+            data: {
+              content: markdown,
+            },
+            metadata: {
+              final_url: loaded.finalUrl,
+              title: loaded.title,
+            },
+          },
+          exec_ms,
+        }),
+      );
+    } catch (err) {
+      if (err instanceof BrowserBusyError) {
+        msg.respond(
+          jc.encode({
+            ok: false,
+            reason: "BROWSER_BUSY",
+            message:
+              "Browser is locked by another agent; cannot relay via Playwright.",
+          }),
+        );
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[Relay] Browser relay failed slug=${node.provider_slug}: ${message}`,
+      );
+      msg.respond(
+        jc.encode({
+          ok: false,
+          reason: "BROWSER_OR_MARKDOWN_FAILED",
+          message,
+        }),
+      );
+    }
+    return;
+  }
+
   let resp: Response;
   try {
     resp = await fetch(injected.url, init);
@@ -368,6 +482,10 @@ async function handleExecute(
     return;
   }
   const text = await resp.text();
+  console.error(
+    `[Relay] Response body slug=${node.provider_slug} url=${injected.url} status=${resp.status}`,
+    text,
+  );
   let body: unknown = text;
   try {
     body = text ? JSON.parse(text) : null;

@@ -1,15 +1,16 @@
 import fs from "fs";
 import path from "path";
+import { getDomain } from "tldts";
 import { CONFIG_DIR } from "../config.js";
 
 // ════════════════════════════════════════════════════════════════════
 //  ~/.aegis/relay.json — daemon-side directory of relay opt-ins
 // ════════════════════════════════════════════════════════════════════
 //
-// Each entry says: "I, the user, am willing to relay calls for
-// `provider_slug` using the value of `vault_key_name` in my vault. I
-// charge `fee_per_call` credits per relayed call and won't process
-// more than `rate_limit_max` calls per rolling 24-hour window."
+// Each entry says: "I, the user, am willing to relay calls for either an
+// API `provider_slug` using `vault_key_name`, or a registrable domain. I
+// charge `fee_per_call` credits per relayed call and won't process more
+// than `rate_limit_max` calls per rolling 24-hour window."
 //
 // Secrets never leave this machine. The slug, fee, limit, and the vault
 // property name (`vault_key_name`) are uploaded to the Router during
@@ -22,6 +23,8 @@ export interface RelayNodeConfig {
   vault_key_name: string;
   fee_per_call: number;
   rate_limit_max: number;
+  relay_type?: "api" | "domain";
+  relay_domain?: string;
 }
 
 export interface RelayConfig {
@@ -29,6 +32,19 @@ export interface RelayConfig {
 }
 
 const SLUG_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+const RELAY_TYPES = new Set(["api", "domain"]);
+
+export function normalizeRelayDomain(input: string): string | null {
+  const raw = input.trim().toLowerCase();
+  if (!raw) return null;
+  const parsed = getDomain(raw, { allowPrivateDomains: true });
+  if (parsed) return parsed.toLowerCase();
+  try {
+    return getDomain(new URL(raw).href, { allowPrivateDomains: true })?.toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function emptyConfig(): RelayConfig {
   return { nodes: [] };
@@ -49,11 +65,21 @@ export function loadRelayConfig(): RelayConfig {
       const vault = node.vault_key_name;
       const fee = node.fee_per_call;
       const rate = node.rate_limit_max;
+      const relayType =
+        typeof node.relay_type === "string" && RELAY_TYPES.has(node.relay_type)
+          ? (node.relay_type as "api" | "domain")
+          : "api";
+      const rawDomain =
+        typeof node.relay_domain === "string"
+          ? node.relay_domain
+          : "";
+      const relayDomain = normalizeRelayDomain(rawDomain);
       if (
         typeof slug !== "string" ||
         !SLUG_RE.test(slug) ||
         typeof vault !== "string" ||
-        vault.length === 0 ||
+        (relayType === "api" && vault.length === 0) ||
+        (relayType === "domain" && !relayDomain) ||
         typeof fee !== "number" ||
         !Number.isInteger(fee) ||
         fee < 0 ||
@@ -71,6 +97,8 @@ export function loadRelayConfig(): RelayConfig {
         vault_key_name: vault,
         fee_per_call: fee,
         rate_limit_max: rate,
+        relay_type: relayType,
+        relay_domain: relayType === "domain" ? relayDomain ?? "" : "",
       });
     }
     return { nodes: cleaned };

@@ -136,7 +136,10 @@ export class BrowserManager {
       const locator = page.locator(selector).first();
 
       if (action === "click") {
-        await locator.click({ timeout: TOOL_TIMEOUT_MS });
+        // Instead of locator.click(), use real mouse path (avoids synthetic isTrusted:false events).
+        await locator.hover({ timeout: TOOL_TIMEOUT_MS });
+        await page.mouse.down();
+        await page.mouse.up();
       } else if (action === "type") {
         if (typeof text !== "string") {
           throw new Error('browser_act action "type" requires `text`.');
@@ -157,6 +160,38 @@ export class BrowserManager {
     return this.withBrowserOperation(async (page) =>
       this.extractPageData(page, instructions),
     );
+  }
+
+  /**
+   * Load a URL in the persistent Chromium profile and return serialized HTML (for
+   * domain relay: cookies, JS-rendered DOM, weaker bot fingerprints than bare fetch).
+   * Does not call aegis-parse; relay callers normalize the returned HTML before
+   * sending it over NATS.
+   */
+  async loadPageHtml(
+    url: string,
+    options?: { settleMs?: number },
+  ): Promise<{ html: string; finalUrl: string; title: string }> {
+    return this.withBrowserOperation(async (page) => {
+      await page.goto(url, { waitUntil: "load", timeout: TOOL_TIMEOUT_MS });
+
+      const settleMs =
+        options?.settleMs ??
+        (() => {
+          const raw = Number(process.env.AEGIS_RELAY_BROWSER_SETTLE_MS);
+          return Number.isFinite(raw) && raw >= 0 ? raw : 1_500;
+        })();
+
+      if (settleMs > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, settleMs));
+      }
+
+      return {
+        html: await page.content(),
+        finalUrl: page.url(),
+        title: await page.title(),
+      };
+    });
   }
 
   /**
@@ -191,12 +226,18 @@ export class BrowserManager {
     instructions: string,
   ): Promise<unknown> {
     const url = page.url();
+
+    // 🔬 SMOKE TEST BASELINE: Drop all smart logic. Hard wait for 10 seconds.
+    console.warn(
+      `[Browser] Testing ${url}... Sleeping hard for 10s to watch execution state.`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 20000));
+
     const html = await page.content();
 
     try {
-      const response = await executeAegisRequest("aegis-parse", {
+      const response = await executeAegisRequest("aegis-html-to-markdown", {
         html,
-        url,
         instructions,
       });
       return this.normalizeParseResponse(response, url);
@@ -228,13 +269,19 @@ export class BrowserManager {
 
     const parsed = payload as Record<string, unknown>;
     const inner =
-      parsed.data && typeof parsed.data === "object" && !Array.isArray(parsed.data)
+      parsed.data &&
+      typeof parsed.data === "object" &&
+      !Array.isArray(parsed.data)
         ? (parsed.data as Record<string, unknown>)
         : {};
 
     const markdown =
-      this.firstString(parsed.markdown, parsed.content, inner.markdown, inner.content) ??
-      "";
+      this.firstString(
+        parsed.markdown,
+        parsed.content,
+        inner.markdown,
+        inner.content,
+      ) ?? "";
     const extractedData =
       parsed.extractedData ??
       parsed.extracted_data ??
@@ -339,8 +386,11 @@ export class BrowserManager {
         `[Browser] Launching headed Chromium with profile ${this.profileDir}`,
       );
 
-      /** Stability on Linux/low shared memory; benign on desktop. */
-      const args = ["--disable-dev-shm-usage"];
+      /** Stability on Linux/low shared memory, plus anti-detection primitives */
+      const args = [
+        "--disable-dev-shm-usage",
+        "--disable-blink-features=AutomationControlled", // Hides the automation flag from Cloudflare
+      ];
 
       this.context = await chromium.launchPersistentContext(this.profileDir, {
         headless: false,
@@ -348,6 +398,19 @@ export class BrowserManager {
         args,
         /** Match the actual window size instead of a fixed emulation rect. */
         viewport: null,
+      });
+
+      // Strips the webdriver property before any page scripts execute
+      await this.context.addInitScript(() => {
+        Object.defineProperty(navigator, "webdriver", {
+          get: () => undefined,
+        });
+        // Keeps user-agent string looking authentic
+        (
+          window as unknown as Window & {
+            chrome: { runtime: Record<string, never> };
+          }
+        ).chrome = { runtime: {} };
       });
 
       this.context.once("close", () => {
